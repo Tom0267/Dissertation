@@ -1,0 +1,4 @@
+huggingface
+kagglehub
+transformers
+torch
