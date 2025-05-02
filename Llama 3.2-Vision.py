@@ -51,7 +51,7 @@ if gpu == 0:
 else:
     print("Using CPU")
 
-pipe = pipeline("image-text-to-text", model="meta-llama/Llama-3.2-11B-Vision-Instruct")
+pipe = pipeline("image-text-to-text", model="meta-llama/Llama-3.2-11B-Vision-Instruct", device=gpu)
 
 messages = [
     {"role": "user", "content": "give me a number between 1 and 10?"}

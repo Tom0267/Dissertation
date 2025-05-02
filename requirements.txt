@@ -2,3 +2,4 @@ huggingface
 kagglehub
 transformers
 torch
+cv2

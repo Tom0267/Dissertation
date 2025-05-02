@@ -1,5 +1,5 @@
 # Load model directly
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import AutoProcessor, AutoModelForCausalLM, TrainingArguments
 import torch
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
