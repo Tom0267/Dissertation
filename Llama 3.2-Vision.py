@@ -1,59 +1,69 @@
-from transformers import AutoProcessor, AutoModelForImageTextToText, pipeline
-import kagglehub
-import torch
-import cv2
 import os
+import torch
+from PIL import Image
+from transformers import MllamaForConditionalGeneration, AutoProcessor
 
 #config
+modelId = "meta-llama/Llama-3.2-11B-Vision-Instruct"
 frameDirectory = "extractedFrames"
-frameInterval = 30
+prompt = "Does this image show a violent incident?"
 
-path = kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset")
-videoDirectory = os.path.join(path, "Real Life Violence Dataset")
-os.makedirs(frameDirectory, exist_ok=True)
+#load model and processor
+model = MllamaForConditionalGeneration.from_pretrained(
+    modelId,
+    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+    device_map="auto"
+)
+model.tie_weights()
+model.eval()
+processor = AutoProcessor.from_pretrained(modelId)
 
+#group frames by video number
+def groupFramesByVideo(directory):
+    videoGroups = {}
+    for fileName in os.listdir(directory):
+        if not fileName.endswith(".jpg"):
+            continue
+        parts = fileName.split("_")
+        if len(parts) < 3:
+            continue
+        videoId = parts[1]  #e.g. NV_1_0_X.jpg → videoId = "1"
+        if videoId not in videoGroups:
+            videoGroups[videoId] = []
+        videoGroups[videoId].append(os.path.join(directory, fileName))
+    return videoGroups
 
-def extractFrames(videoPath, label, outputDirectory, interval=30):
-    videoName = os.path.splitext(os.path.basename(videoPath))[0]
-    capture = cv2.VideoCapture(videoPath)
-    frameCount = 0
-    savedCount = 0
+def checkViolenceInFrame(framePath):
+    image = Image.open(framePath).convert("RGB")
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image"},
+            {"type": "text", "text": prompt}
+        ]}
+    ]
+    inputText = processor.apply_chat_template(messages, add_generation_prompt=True)
+    inputs = processor(image, inputText, add_special_tokens=False, return_tensors="pt").to(model.device)
 
-    while capture.isOpened():
-        success, frame = capture.read()
-        if not success:
-            break
-        if frameCount % interval == 0:
-            outputName = f"{videoName}_{savedCount}_{label}.jpg"
-            outputPath = os.path.join(outputDirectory, outputName)
-            cv2.imwrite(outputPath, frame)
-            savedCount += 1
-        frameCount += 1
+    with torch.no_grad():
+        outputIds = model.generate(**inputs, max_new_tokens=30)
+        result = processor.decode(outputIds[0], skip_special_tokens=True).lower()
 
-    capture.release()
-    print(f"Extracted {savedCount} frames from {videoName}.")
+    print(f"{os.path.basename(framePath)} → {result}")
+    return any(term in result for term in ["yes", "violent", "fight", "aggression", "physical"])
 
+#analyse all frames in one video
+def analyseVideoFrames(framePaths):
+    for path in framePaths:
+        if checkViolenceInFrame(path):
+            return True  #flag video as violent
+    return False  #no frame triggered a violence flag
 
-for label in ["Violence", "NonViolence"]:
-    labelPath = os.path.join(videoDirectory, label)
-    for filename in os.listdir(labelPath):
-        if filename.endswith(".mp4"):
-            fullPath = os.path.join(labelPath, filename)
-            extractFrames(fullPath, label, frameDirectory, interval=frameInterval)
+if __name__ == "__main__":
+    groupedFrames = groupFramesByVideo(frameDirectory)
+    print(f"\nAnalysing {len(groupedFrames)} videos...\n")
 
-print("extracted frames saved to:", frameDirectory)
-            
-
-gpu = 0 if torch.cuda.is_available() else -1
-gpu = None
-if gpu == 0:
-    print("Using GPU")
-else:
-    print("Using CPU")
-
-pipe = pipeline("image-text-to-text", model="meta-llama/Llama-3.2-11B-Vision-Instruct", device=gpu)
-
-messages = [
-    {"role": "user", "content": "give me a number between 1 and 10?"}
-]
-output = pipe(messages)
+    print("VideoID,ViolenceDetected")
+    for videoId, frames in groupedFrames.items():
+        frames.sort()  #ensure consistent order
+        isViolent = analyseVideoFrames(frames)
+        print(f"{videoId},{'Yes' if isViolent else 'No'}\n")

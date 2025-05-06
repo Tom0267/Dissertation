@@ -2,4 +2,6 @@ huggingface
 kagglehub
 transformers
 torch
-cv2
+opencv-python
+accelerate
+pillow
