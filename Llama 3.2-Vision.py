@@ -1,12 +1,15 @@
-import os
-import torch
-from PIL import Image
 from transformers import MllamaForConditionalGeneration, AutoProcessor
+from PIL import Image
+import torch
+import csv
+import os
 
 #config
 modelId = "meta-llama/Llama-3.2-11B-Vision-Instruct"
 frameDirectory = "extractedFrames"
-prompt = "Does this image show a violent incident?"
+prompt ="This image is part of a public dataset of street and public scenes used for academic research. start your response with a yes or no if violence depicted in this image then describe what is happening in this image, If there is a violent or aggressive action, explain what it is and who is involved, If there isnt any violence, describe the scene as peaceful or non-violent, use simple language and avoid complex terms where possible. "
+maxTokens = 300
+resultsPath = "results.csv"
 
 #load model and processor
 model = MllamaForConditionalGeneration.from_pretrained(
@@ -27,11 +30,28 @@ def groupFramesByVideo(directory):
         parts = fileName.split("_")
         if len(parts) < 3:
             continue
-        videoId = parts[1]  #e.g. NV_1_0_X.jpg → videoId = "1"
+        videoId = parts[0] + "_" + parts[1]  #e.g. NV_1_0_X.jpg → videoId = "NV_1"
         if videoId not in videoGroups:
             videoGroups[videoId] = []
         videoGroups[videoId].append(os.path.join(directory, fileName))
     return videoGroups
+
+def cleanModelResponse(rawText, promptText):
+    response = rawText.lower().strip()
+
+    #remove known roles and common separators
+    for role in ["user", "assistant", "system", "llama"]:
+        response = response.replace(role + "\n", "")
+        response = response.replace(role + ":", "")
+        response = response.replace(role, "")
+
+    #remove prompt if echoed
+    response = response.replace(promptText.lower(), "")
+
+    #replace multiple line breaks or stray \n
+    response = response.replace("\n", " ").replace("  ", " ").strip()
+
+    return response
 
 def checkViolenceInFrame(framePath):
     image = Image.open(framePath).convert("RGB")
@@ -45,18 +65,22 @@ def checkViolenceInFrame(framePath):
     inputs = processor(image, inputText, add_special_tokens=False, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
-        outputIds = model.generate(**inputs, max_new_tokens=30)
+        outputIds = model.generate(**inputs, max_new_tokens=maxTokens)
         result = processor.decode(outputIds[0], skip_special_tokens=True).lower()
+        result = cleanModelResponse(result, prompt)
 
-    print(f"{os.path.basename(framePath)} → {result}")
-    return any(term in result for term in ["yes", "violent", "fight", "aggression", "physical"])
+    print(f"{os.path.basename(framePath)} → {result}\n")
+    return  result
 
 #analyse all frames in one video
 def analyseVideoFrames(framePaths):
+    captions = []
     for path in framePaths:
-        if checkViolenceInFrame(path):
-            return True  #flag video as violent
-    return False  #no frame triggered a violence flag
+        response = checkViolenceInFrame(path)
+        if response.startswith("yes"):
+            return True, None  #flag video as violent
+        captions.append(response)
+    return False, captions  #no frame triggered a violence flag
 
 if __name__ == "__main__":
     groupedFrames = groupFramesByVideo(frameDirectory)
@@ -64,6 +88,42 @@ if __name__ == "__main__":
 
     print("VideoID,ViolenceDetected")
     for videoId, frames in groupedFrames.items():
-        frames.sort()  #ensure consistent order
-        isViolent = analyseVideoFrames(frames)
-        print(f"{videoId},{'Yes' if isViolent else 'No'}\n")
+            print(f"\nAnalysing {videoId}...")
+            frames.sort()
+            primaryIsViolent, captions = analyseVideoFrames(frames)
+            finalIsViolent = primaryIsViolent
+            secondaryDecision = "N/A"
+
+            # text-only fallback if needed
+            if not primaryIsViolent and captions:
+                combinedText = " ".join(captions)
+                secondPrompt = (
+                    "Based on the following scene descriptions, decide if this video is violent. "
+                    "Respond with 'yes' or 'no'. Descriptions: " + combinedText
+                )
+                messages = [{"role": "user", "content": [{"type": "text", "text": secondPrompt}]}]
+                inputText = processor.apply_chat_template(messages, add_generation_prompt=True)
+                inputs = processor(text=inputText, return_tensors="pt").to(model.device)
+
+                with torch.no_grad():
+                    outputIds = model.generate(**inputs, max_new_tokens=50)
+                    textOnlyResponse = processor.decode(outputIds[0], skip_special_tokens=True).lower()
+                    textOnlyResponse = cleanModelResponse(textOnlyResponse, secondPrompt)
+                print(f"Text-only response → {textOnlyResponse.strip()}")
+
+                print(f"Secondary check → {textOnlyResponse.strip()}")
+                secondaryDecision = "Yes" if textOnlyResponse.startswith("yes") else "No"
+
+                if textOnlyResponse.startswith("yes"):
+                    finalIsViolent = True
+                    
+            with open(resultsPath, "w", newline='', encoding="utf-8") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(["VideoID", "PrimaryDecision", "SecondaryDecision", "FinalDecision"])
+                writer.writerow([
+                    videoId,
+                    "Yes" if primaryIsViolent else "No",
+                    secondaryDecision,
+                    "Yes" if finalIsViolent else "No"
+                ])
+            print(f"{videoId} → Final: {'Yes' if finalIsViolent else 'No'}")            
