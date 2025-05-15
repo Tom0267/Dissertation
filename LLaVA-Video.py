@@ -37,7 +37,7 @@ config.num_labels = 2
 config.hidden_dropout_prob = 0.1
 config.attention_probs_dropout_prob = 0.1
 
-#step 2: load the model but ignore the mismatched head
+#load the model but ignore the mismatched head
 model = TimesformerForVideoClassification.from_pretrained(
     modelName,
     config=config,
