@@ -1,5 +1,6 @@
 from transformers import MllamaForConditionalGeneration, AutoProcessor
 from PIL import Image
+import textClassifier
 import torch
 import csv
 import os
@@ -12,11 +13,7 @@ maxTokens = 300
 resultsPath = "results.csv"
 
 #load model and processor
-model = MllamaForConditionalGeneration.from_pretrained(
-    modelId,
-    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-    device_map="auto"
-)
+model = MllamaForConditionalGeneration.from_pretrained(modelId, torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32, device_map="auto")
 model.tie_weights()
 model.eval()
 processor = AutoProcessor.from_pretrained(modelId)
@@ -77,22 +74,40 @@ def analyseVideoFrames(framePaths):
     captions = []
     for path in framePaths:
         response = checkViolenceInFrame(path)
-        if response.startswith("yes"):
-            return True, None  #flag video as violent
+        refusal = checkBoilerplate(response)
+        if refusal is not None:
+            response = response + refusal
+        if textClassifier.classify(response)["label"] == "violent":
+            return True, None, response  #flag video as violent
         captions.append(response)
-    return False, captions  #no frame triggered a violence flag
+    return False, captions, None  #no frame triggered a violence flag
+
+def checkBoilerplate(text):
+    text = text.lower()
+    if "cutting knowledge date" in text or "today date" in text:
+        return "this image was not described due to model refusal."
+    
+    elif"i cannot provide" in text or "not appropriate to describe" in text or "i can't help with that request." in text:
+        return "Violence was detected but not described due to model refusal."
+
+    return None
 
 if __name__ == "__main__":
     groupedFrames = groupFramesByVideo(frameDirectory)
+    with open(resultsPath, "a", newline='', encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["VideoID", "PrimaryDecision", "SecondaryDecision", "FinalDecision", "ViolentCaption", "TextOnlyResponse"])
+                
     print(f"\nAnalysing {len(groupedFrames)} videos...\n")
 
     print("VideoID,ViolenceDetected")
     for videoId, frames in groupedFrames.items():
             print(f"\nAnalysing {videoId}...")
             frames.sort()
-            primaryIsViolent, captions = analyseVideoFrames(frames)
+            primaryIsViolent, captions, response = analyseVideoFrames(frames)
             finalIsViolent = primaryIsViolent
             secondaryDecision = "N/A"
+            textOnlyResponse = "N/A"
 
             # text-only fallback if needed
             if not primaryIsViolent and captions:
@@ -109,21 +124,21 @@ if __name__ == "__main__":
                     outputIds = model.generate(**inputs, max_new_tokens=50)
                     textOnlyResponse = processor.decode(outputIds[0], skip_special_tokens=True).lower()
                     textOnlyResponse = cleanModelResponse(textOnlyResponse, secondPrompt)
-                print(f"Text-only response → {textOnlyResponse.strip()}")
+                print(f"Text-only response: {textOnlyResponse.strip()}")
 
-                print(f"Secondary check → {textOnlyResponse.strip()}")
-                secondaryDecision = "Yes" if textOnlyResponse.startswith("yes") else "No"
+                print(f"Secondary check: {textOnlyResponse.strip()}")
+                secondaryDecision = "yes" if textClassifier.classify(textOnlyResponse)["label"] == "violent" else "No"
 
-                if textOnlyResponse.startswith("yes"):
-                    finalIsViolent = True
+                finalIsViolent = True if secondaryDecision == "yes" else False
                     
-            with open(resultsPath, "w", newline='', encoding="utf-8") as csvfile:
+            with open(resultsPath, "a", newline='', encoding="utf-8") as csvfile:
                 writer = csv.writer(csvfile)
-                writer.writerow(["VideoID", "PrimaryDecision", "SecondaryDecision", "FinalDecision"])
                 writer.writerow([
                     videoId,
                     "Yes" if primaryIsViolent else "No",
                     secondaryDecision,
-                    "Yes" if finalIsViolent else "No"
+                    "Yes" if finalIsViolent else "No",
+                    response if response else "N/A",
+                    textOnlyResponse if not primaryIsViolent else "N/A"
                 ])
-            print(f"{videoId} → Final: {'Yes' if finalIsViolent else 'No'}")            
+            print(f"{videoId} Final: {'Yes' if finalIsViolent else 'No'}")            
