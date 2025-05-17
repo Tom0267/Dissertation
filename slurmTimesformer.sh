@@ -17,10 +17,11 @@ cd /mnt/nfs/homes/ditchfit/Dissertation/
 # log basic info
 echo "Running on $(hostname)"
 
-echo "preparing data"
-python timesformerPreprocessing.py
-#echo "Starting training"
+#echo "preparing data"
+#python timesformerPreprocessing.py
+
+echo "Starting training"
 # run your training script
-#python LLaVA-Video.py
+python LLaVA-Video.py
 
 echo "Job finished with exit code $? at $(date)"

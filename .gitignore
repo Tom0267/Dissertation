@@ -3,4 +3,5 @@ extractedFrames/
 results/
 venv/
 preprocessed/
+preprocessed.zip
 logs/

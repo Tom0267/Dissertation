@@ -1,8 +1,7 @@
 import os
 import socket
 import torch
-import random
-from PIL import Image
+import shutil
 from transformers import (
     AutoImageProcessor,
     TimesformerForVideoClassification,
@@ -43,8 +42,8 @@ processor = AutoImageProcessor.from_pretrained(modelName, use_fast=False)
 config = TimesformerConfig.from_pretrained(modelName)
 config.num_labels = 2
 #print(config)
-config.hidden_dropout_prob = 0.1
-config.attention_probs_dropout_prob = 0.1
+config.hidden_dropout_prob = 0.15
+config.attention_probs_dropout_prob = 0.15
 
 #load the model but ignore the mismatched head
 model = TimesformerForVideoClassification.from_pretrained(
@@ -67,25 +66,42 @@ transform = Compose([
 
 class ViolenceDataset(Dataset):
     def __init__(self, rootDir):
-        self.samples = []
-        for fileName in os.listdir(rootDir):
-            if fileName.endswith(".pt"):
-                fullPath = os.path.join(rootDir, fileName)
-                self.samples.append(fullPath)
+        self.samples = sorted([
+            os.path.join(rootDir, f)
+            for f in os.listdir(rootDir)
+            if f.endswith(".pt")
+        ])
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         filePath = self.samples[idx]
-        data = torch.load(filePath)
-        return {"pixel_values": data["pixel_values"], "labels": data["label"]}
+        try:
+            data = torch.load(filePath)
+            return {
+                "pixel_values": data["pixel_values"],
+                "labels": data["label"]
+            }
+        except Exception as e:
+            raise RuntimeError(f"Failed to load {filePath}: {e}")
 
 #create dataset and train/val split
-dataset = ViolenceDataset(datasetPath, labelMap, transform)
-trainSize = int(0.7 * len(dataset))
-valSize = len(dataset) - trainSize
-trainDs, valDs = random_split(dataset, [trainSize, valSize])
+dataset = ViolenceDataset("preprocessed")
+fullSize = len(dataset)
+trainSize = int(0.7 * fullSize)
+valSize = int(0.15 * fullSize)
+testSize = fullSize - trainSize - valSize
+
+trainDs, valDs, testDs = random_split(dataset, [trainSize, valSize, testSize])
+
+# copy files to test_videos
+testFilePaths = [dataset.samples[i] for i in testDs.indices]
+os.makedirs("test_videos", exist_ok=True)
+
+for src in testFilePaths:
+    dst = os.path.join("test_videos", os.path.basename(src))
+    shutil.copyfile(src, dst)
 
 def accuracyScore(eval_pred):
     logits, labels = eval_pred
@@ -121,10 +137,9 @@ trainer = Trainer(
     compute_metrics=accuracyScore
 )
 
-if os.path.exists("timesformerOutput/checkpoint-1"):
+if trainer.state.best_model_checkpoint and os.path.exists(trainer.state.best_model_checkpoint):
     print("Resuming from checkpoint...")
-    #use best checkpoint if available
-    trainer.train(resume_from_checkpoint=True)
+    trainer.train(resume_from_checkpoint=trainer.state.best_model_checkpoint)
 else:
     print("Starting training from scratch...")
     trainer.train()
