@@ -7,3 +7,6 @@ accelerate
 pillow
 pandas
 hf_xet
+torchvision
+av
+scikit-learn
