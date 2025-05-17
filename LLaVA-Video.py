@@ -7,14 +7,16 @@ from transformers import (
     TimesformerForVideoClassification,
     TrainingArguments,
     Trainer,
-    TimesformerConfig
+    TimesformerConfig,
+    EarlyStoppingCallback
 )
 import kagglehub
 from torchvision.io import read_video
 from sklearn.metrics import accuracy_score
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize, ColorJitter, RandomApply
 from torch.utils.data import Dataset, random_split
-   
+
+
 #slurm
 print("=== SLURM ENVIRONMENT INFO ===")
 print(f"Hostname: {socket.gethostname()}")
@@ -42,8 +44,8 @@ processor = AutoImageProcessor.from_pretrained(modelName, use_fast=False)
 config = TimesformerConfig.from_pretrained(modelName)
 config.num_labels = 2
 #print(config)
-config.hidden_dropout_prob = 0.15
-config.attention_probs_dropout_prob = 0.15
+config.hidden_dropout_prob = 0.2
+config.attention_probs_dropout_prob = 0.2
 
 #load the model but ignore the mismatched head
 model = TimesformerForVideoClassification.from_pretrained(
@@ -114,13 +116,13 @@ def accuracyScore(eval_pred):
 args = TrainingArguments(
     per_device_train_batch_size=1,
     eval_strategy="epoch",
-    num_train_epochs=2,
+    num_train_epochs=10,
     logging_dir="./logs",
     save_strategy="epoch",
     load_best_model_at_end=True,
     logging_steps=20,
     fp16=torch.cuda.is_available(),
-    weight_decay=0.01,
+    weight_decay=0.05,
     max_grad_norm=1.0,
     output_dir="./timesformerOutput",
     save_total_limit=2,
@@ -134,7 +136,8 @@ trainer = Trainer(
     args=args,
     train_dataset=trainDs,
     eval_dataset=valDs,
-    compute_metrics=accuracyScore
+    compute_metrics=accuracyScore,
+    callbacks= [EarlyStoppingCallback(early_stopping_patience=3)]
 )
 
 if trainer.state.best_model_checkpoint and os.path.exists(trainer.state.best_model_checkpoint):
@@ -147,3 +150,8 @@ else:
 trainer.save_model("timesformerTrained")
 
 trainer.evaluate()
+
+#test the model
+testResults = trainer.evaluate(testDs)
+print("=== TEST RESULTS ===")
+print(testResults.metrics)
