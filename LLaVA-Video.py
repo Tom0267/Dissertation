@@ -66,50 +66,20 @@ transform = Compose([
 ])
 
 class ViolenceDataset(Dataset):
-    def __init__(self, root, labels, transform, numFrames=videoFrames, interval=frameInterval):
+    def __init__(self, rootDir):
         self.samples = []
-        self.labels = labels
-        self.transform = transform
-        self.numFrames = numFrames
-        self.interval = interval
-
-        for labelName in ["NonViolence", "Violence"]:
-            labelPath = os.path.join(root, labelName)
-            for fileName in os.listdir(labelPath):
-                if fileName.endswith(".mp4"):
-                    self.samples.append((os.path.join(labelPath, fileName), self.labels[labelName]))
+        for fileName in os.listdir(rootDir):
+            if fileName.endswith(".pt"):
+                fullPath = os.path.join(rootDir, fileName)
+                self.samples.append(fullPath)
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, label = self.samples[idx]
-        frames, _, _ = read_video(path, pts_unit="sec")
-        total = frames.shape[0]
-
-        #temporal jitter
-        max_start = max(0, total - (self.numFrames - 1) * self.interval)
-        start = random.randint(0, max_start) if max_start > 0 else 0
-
-        selected = []
-        for i in range(self.numFrames):
-            frameNum = start + i * self.interval
-            if frameNum < total:
-                frame = frames[frameNum]
-                image = Image.fromarray(frame.numpy())
-                selected.append(image)
-            else:
-                break  #stop if exceeded video length
-
-        #pad with black frames if needed
-        while len(selected) < maxFrames:
-            selected.append(Image.new("RGB", (224, 224), (0, 0, 0)))
-
-        #let processor handle resizing, normalising, etc.
-        with torch.no_grad():
-            pixelValues = processor(images=selected, return_tensors="pt")["pixel_values"]
-
-        return {"pixel_values": pixelValues.squeeze(0), "labels": label}
+        filePath = self.samples[idx]
+        data = torch.load(filePath)
+        return {"pixel_values": data["pixel_values"], "labels": data["label"]}
 
 #create dataset and train/val split
 dataset = ViolenceDataset(datasetPath, labelMap, transform)

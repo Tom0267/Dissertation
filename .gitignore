@@ -2,3 +2,5 @@ extractedFrames_/
 extractedFrames/
 results/
 venv/
+preprocessed/
+logs/
