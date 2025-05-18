@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=timesformer-train
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --job-name=LLM-test
+#SBATCH --output=LLMLogs/%x-%j.out
+#SBATCH --error=LLMLogs/%x-%j.err
 #SBATCH --partition=a5000-16c64g-6h
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

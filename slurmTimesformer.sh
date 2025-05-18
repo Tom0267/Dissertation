@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=timesformer-train
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=timesformerLogs/%x-%j.out
+#SBATCH --error=timesformerLogs/%x-%j.err
 #SBATCH --partition=a5000-16c64g-6h
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

@@ -2,6 +2,13 @@ import os
 import socket
 import torch
 import shutil
+import kagglehub
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import RocCurveDisplay
+from torch.utils.data import Dataset, random_split
+from torchvision.transforms import Compose, Resize, ToTensor, Normalize, ColorJitter, RandomApply
 from transformers import (
     AutoImageProcessor,
     TimesformerForVideoClassification,
@@ -10,12 +17,15 @@ from transformers import (
     TimesformerConfig,
     EarlyStoppingCallback
 )
-import kagglehub
-from torchvision.io import read_video
-from sklearn.metrics import accuracy_score
-from torchvision.transforms import Compose, Resize, ToTensor, Normalize, ColorJitter, RandomApply
-from torch.utils.data import Dataset, random_split
-
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    classification_report
+)
 
 #slurm
 print("=== SLURM ENVIRONMENT INFO ===")
@@ -105,12 +115,105 @@ for src in testFilePaths:
     dst = os.path.join("test_videos", os.path.basename(src))
     shutil.copyfile(src, dst)
 
-def accuracyScore(eval_pred):
+def metrics(eval_pred, threshold=0.5):
     logits, labels = eval_pred
-    preds = torch.tensor(logits).argmax(dim=-1)
+    probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
+    preds = (probs[:, 1] >= threshold).astype(int)
+    labels = np.array(labels)
+
+    precision = precision_score(labels, preds)
+    recall = recall_score(labels, preds)
+    f1 = f1_score(labels, preds)
+    accuracy = accuracy_score(labels, preds)
+
+    try:
+        roc_auc = roc_auc_score(labels, probs[:, 1])
+    except ValueError:
+        roc_auc = float('nan')
+
+    cm = confusion_matrix(labels, preds)
+    report = classification_report(labels, preds, output_dict=True)
+
     return {
-        "accuracy": accuracy_score(labels, preds)
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "roc_auc": roc_auc,
+        "confusion_matrix": cm.tolist(),
+        "classification_report": report
     }
+    
+def plotMetrics(results, save_dir="evaluation_plots"):
+    os.makedirs(save_dir, exist_ok=True)
+
+    # confusion matrix
+    cm = np.array(results["eval_confusion_matrix"])
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap="Blues", xticklabels=["NonViolence", "Violence"], yticklabels=["NonViolence", "Violence"])
+    plt.title("Confusion Matrix")
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "confusion_matrix.png"))
+    plt.close()
+
+    # ROC curve
+    try:
+        # re-evaluate to get raw logits and labels
+        outputs = trainer.predict(testDs)
+        logits = outputs.predictions
+        labels = outputs.label_ids
+        probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()[:, 1]
+        RocCurveDisplay.from_predictions(labels, probs)
+        plt.title("ROC Curve")
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, "roc_curve.png"))
+        plt.close()
+    except Exception as e:
+        print(f"Could not plot ROC curve: {e}")
+
+def threshold_sweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
+    outputs = trainer.predict(dataset)
+    logits = outputs.predictions
+    labels = outputs.label_ids
+    probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()[:, 1]
+
+    results = []
+
+    for t in thresholds:
+        preds = (probs >= t).astype(int)
+        f1 = f1_score(labels, preds)
+        precision = precision_score(labels, preds)
+        recall = recall_score(labels, preds)
+        accuracy = accuracy_score(labels, preds)
+
+        results.append({
+            "threshold": t,
+            "f1": f1,
+            "precision": precision,
+            "recall": recall,
+            "accuracy": accuracy
+        })
+
+    # plot
+    plt.figure(figsize=(8, 5))
+    for metric in ["f1", "precision", "recall", "accuracy"]:
+        plt.plot(thresholds, [r[metric] for r in results], label=metric)
+    plt.xlabel("Threshold")
+    plt.ylabel("Score")
+    plt.title("Threshold Tuning")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("evaluation_plots/threshold_tuning.png")
+    plt.close()
+
+    # return best threshold based on highest F1
+    best = max(results, key=lambda x: x["f1"])
+    print(f"Best Threshold (F1): {best['threshold']} with F1 = {best['f1']:.4f}")
+    return best
+
 
 #training args
 args = TrainingArguments(
@@ -127,7 +230,8 @@ args = TrainingArguments(
     output_dir="./timesformerOutput",
     save_total_limit=2,
     metric_for_best_model="accuracy",
-    greater_is_better=True
+    greater_is_better=True,
+    
 )
 
 #trainer
@@ -136,7 +240,7 @@ trainer = Trainer(
     args=args,
     train_dataset=trainDs,
     eval_dataset=valDs,
-    compute_metrics=accuracyScore,
+    compute_metrics=metrics,
     callbacks= [EarlyStoppingCallback(early_stopping_patience=3)]
 )
 
@@ -152,6 +256,24 @@ trainer.save_model("timesformerTrained")
 trainer.evaluate()
 
 #test the model
-testResults = trainer.evaluate(testDs)
+testResults = trainer.evaluate(eval_dataset=testDs)
 print("=== TEST RESULTS ===")
-print(testResults.metrics)
+for key, name in [
+    ("accuracy", "Accuracy"),
+    ("f1", "F1"),
+    ("precision", "Precision"),
+    ("recall", "Recall"),
+    ("roc_auc", "ROC-AUC"),
+    ("confusion_matrix", "Confusion Matrix"),
+    ("classification_report", "Classification Report")
+]:
+    print(f"{name}: {testResults.get(f'eval_{key}', 'N/A')}")
+    
+plotMetrics(testResults, save_dir="evaluation_plots")
+
+best_threshold = threshold_sweep(trainer, testDs)
+print(f"Best threshold for F1: {best_threshold['threshold']}")
+print(f"Best F1: {best_threshold['f1']}")
+print(f"Best Precision: {best_threshold['precision']}")
+print(f"Best Recall: {best_threshold['recall']}")
+print(f"Best Accuracy: {best_threshold['accuracy']}")

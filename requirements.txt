@@ -10,3 +10,4 @@ hf_xet
 torchvision
 av
 scikit-learn
+seaborn
