@@ -6,3 +6,4 @@ preprocessed/
 preprocessed.zip
 logs/
 test_videos/
+slurm*.sh
