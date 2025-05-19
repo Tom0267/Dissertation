@@ -7,3 +7,5 @@ preprocessed.zip
 logs/
 test_videos/
 slurm*.sh
+results.csv
+test_videos/
