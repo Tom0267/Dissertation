@@ -118,4 +118,4 @@ for className in labelMap:
     count = sum(1 for f in os.listdir(outputDir) if f.startswith(f"{className}_") and f.endswith(".pt"))
     print(f"{className}: {count} tensors")
 
-print("\n✅ Preprocessing complete. Files saved in:", outputDir)
+print("\nPreprocessing complete. Files saved in:", outputDir)

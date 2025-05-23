@@ -11,3 +11,4 @@ torchvision
 av
 scikit-learn
 seaborn
+matplotlib

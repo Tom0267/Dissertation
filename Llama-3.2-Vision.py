@@ -1,9 +1,11 @@
 from transformers import MllamaForConditionalGeneration, AutoProcessor
 from PIL import Image
 import textClassifier
+import kagglehub
 import torch
 import csv
 import os
+import cv2
 
 #config
 modelId = "meta-llama/Llama-3.2-11B-Vision-Instruct"
@@ -18,7 +20,6 @@ model.tie_weights()
 model.eval()
 processor = AutoProcessor.from_pretrained(modelId)
 
-#group frames by video number
 def groupFramesByVideo(directory):
     videoGroups = {}
     for fileName in os.listdir(directory):
@@ -27,11 +28,54 @@ def groupFramesByVideo(directory):
         parts = fileName.split("_")
         if len(parts) < 3:
             continue
-        videoId = parts[0] + "_" + parts[1]  #e.g. NV_1_0_X.jpg → videoId = "NV_1"
+        videoId = parts[1] + "_" + parts[2]  # e.g. NV_102
         if videoId not in videoGroups:
             videoGroups[videoId] = []
         videoGroups[videoId].append(os.path.join(directory, fileName))
     return videoGroups
+
+
+def extractFramesFromTestVideos(ptDir, datasetRoot, outputDir="extractedFrames", frameRate=1):
+    os.makedirs(outputDir, exist_ok=True)
+    for ptFile in os.listdir(ptDir):
+        if not ptFile.endswith(".pt"):
+            continue
+
+        baseName = ptFile.removesuffix(".mp4.pt")
+        if baseName.startswith("NonViolence_"):
+            realName = baseName.replace("NonViolence_", "")  #NV_649
+            className = "NonViolence"
+        elif baseName.startswith("Violence_"):
+            realName = baseName.replace("Violence_", "")  #V_23
+            className = "Violence"
+        else:
+            print(f"Unrecognised prefix in: {baseName}")
+            continue
+
+        videoName = realName + ".mp4"
+        videoPath = os.path.join(datasetRoot, className, videoName)
+
+        if not os.path.exists(videoPath):
+            print(f"------Skipping {videoPath}, not found.------")
+            continue
+
+        cap = cv2.VideoCapture(videoPath)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frameInterval = int(fps * frameRate)
+        count, frameId = 0, 0
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if count % frameInterval == 0:
+                outName = f"{baseName}_{frameId}.jpg"
+                outPath = os.path.join(outputDir, outName)
+                cv2.imwrite(outPath, frame)
+                frameId += 1
+            count += 1
+        cap.release()
+        print(f"Extracted {frameId} frames from {videoName}")
 
 def cleanModelResponse(rawText, promptText):
     response = rawText.lower().strip()
@@ -80,7 +124,7 @@ def analyseVideoFrames(videoId, framePaths, frameWriter):
         label = textClassifier.classify(response)["label"]
         captions.append(response)
 
-        # log each frame result
+        #log each frame result
         frameWriter.writerow([
             videoId,
             os.path.basename(path),
@@ -89,9 +133,11 @@ def analyseVideoFrames(videoId, framePaths, frameWriter):
         ])
 
         if label == "violent":
-            return True, None, response  # stop early if violence is detected
+            return True, None, response  #stop early if violence is detected
 
     return False, captions, None
+
+
 
 def checkBoilerplate(text):
     text = text.lower()
@@ -105,17 +151,21 @@ def checkBoilerplate(text):
 
 if __name__ == "__main__":
     frameResultsPath = "frameOutputs.csv"
-    with open(frameResultsPath, "w", newline='', encoding="utf-8") as framefile:
-        writer = csv.writer(framefile)
-        writer.writerow(["VideoID", "Frame", "RawCaption", "ClassifiedAs"])
-    
-    groupedFrames = groupFramesByVideo(frameDirectory)
-    with open(resultsPath, "a", newline='', encoding="utf-8") as csvfile, open(frameResultsPath, "a", newline='', encoding="utf-8") as framefile:
+    datasetPath = os.path.join(
+        kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"),
+        "Real Life Violence Dataset"
+    )
 
+    extractFramesFromTestVideos("test_videos", datasetPath)
+
+    groupedFrames = groupFramesByVideo(frameDirectory)
+    with open(resultsPath, "a", newline='', encoding="utf-8", buffering=1) as csvfile, open(frameResultsPath, "w", newline='', encoding="utf-8", buffering=1) as framefile:
         videoWriter = csv.writer(csvfile)
         frameWriter = csv.writer(framefile)
 
+        # headers
         videoWriter.writerow(["VideoID", "PrimaryDecision", "SecondaryDecision", "FinalDecision", "ViolentCaption", "TextOnlyResponse"])
+        frameWriter.writerow(["VideoID", "Frame", "RawCaption", "ClassifiedAs"])
 
         print(f"\nAnalysing {len(groupedFrames)} videos...\n")
         print("VideoID,ViolenceDetected")
@@ -157,4 +207,4 @@ if __name__ == "__main__":
                 textOnlyResponse if not primaryIsViolent else "N/A"
             ])
 
-            print(f"{videoId} Final: {'Yes' if finalIsViolent else 'No'}")      
+            print(f"{videoId} Final: {'Yes' if finalIsViolent else 'No'}")
