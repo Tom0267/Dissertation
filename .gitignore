@@ -10,9 +10,9 @@ slurm*.sh
 results.csv
 test_videos/
 evaluation_plots/
-keys/
 __pycache__/
 timesformerOutput/
 OpticalLogs/
 timesformerLogs/
 LLMLogs/
+timesformerTrained/
