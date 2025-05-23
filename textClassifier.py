@@ -2,7 +2,7 @@ from transformers import pipeline
 import torch
 
 # create the zero-shot classification pipeline
-zeroShotClassifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=0 if torch.cuda.is_available() else -1)
+zeroShotClassifier = pipeline("zero-shot-classification", model="microsoft/deberta-v3-large-mnli", device=0 if torch.cuda.is_available() else -1)
 
 def classify(text, candidateLabels=["violent", "non-violent"], hypothesisTemplate="This text describes a real-life {} situation."):
     result = zeroShotClassifier(

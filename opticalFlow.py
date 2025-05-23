@@ -1,26 +1,31 @@
-import os
-import cv2
-import kagglehub
-import numpy as np
-from tqdm import tqdm
 from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, classification_report, confusion_matrix, roc_auc_score
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from scipy.stats import skew
+from tqdm import tqdm
+import numpy as np
+import kagglehub
+import cv2
+import os
 
-# config
+#config
 VIDEO_DIR = os.path.join(kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"), "Real Life Violence Dataset")
 LABEL_MAP = {"Violence": 1, "NonViolence": 0}
 
-# parameters to match other models
+#parameters to match other models
 NUM_FRAMES = 20
 FRAME_INTERVAL = 15
 RESIZE_SHAPE = (224, 224)
 MOTION_THRESHOLD = 4.5
 
-def sweepThresholds(videoPaths, labels, thresholds=np.arange(0.0, 10.5, 0.5)):
-    scores = [motionScore(path) for path in tqdm(videoPaths, desc="Scoring videos")]
-    results = []
+def sweepFeatureThreshold(videoPaths, labels, feature, thresholds=np.arange(0.0, 10, 0.5)):
+    print(f"\nSweeping feature: {feature}")
+    
+    #extract chosen feature for each video
+    featureValues = [motionFeatures(path)[feature] for path in tqdm(videoPaths, desc=f"Extracting '{feature}'")]
 
+    results = []
     for t in thresholds:
-        preds = [1 if s >= t else 0 for s in scores]
+        preds = [1 if val >= t else 0 for val in featureValues]
 
         f1 = f1_score(labels, preds, zero_division=0)
         precision = precision_score(labels, preds, zero_division=0)
@@ -35,14 +40,11 @@ def sweepThresholds(videoPaths, labels, thresholds=np.arange(0.0, 10.5, 0.5)):
             "accuracy": accuracy
         })
 
-    # Best threshold by F1
+    #best threshold for that feature
     best = max(results, key=lambda x: x["f1"])
-    print(f"\n📌 Best Threshold (F1): {best['threshold']:.2f}")
-    print(f"   F1: {best['f1']:.4f} | Precision: {best['precision']:.4f} | Recall: {best['recall']:.4f} | Accuracy: {best['accuracy']:.4f}")
+    print(f"Best for '{feature}': {best['threshold']:.2f} | F1: {best['f1']:.4f} | Precision: {best['precision']:.4f} | Recall: {best['recall']:.4f} | Accuracy: {best['accuracy']:.4f}")
 
-    plotThresholdSweep(results)
-    return best, results
-
+    return results, best
 
 def plotThresholdSweep(results):
     import matplotlib.pyplot as plt
@@ -85,13 +87,17 @@ def extractUniformFrames(videoPath, numFrames=NUM_FRAMES, frameInterval=FRAME_IN
     cap.release()
     return selected
 
-def motionScore(videoPath):
+def motionFeatures(videoPath):
     frames = extractUniformFrames(videoPath)
 
     if len(frames) < 2:
-        return 0.0  # not enough frames to compare
+        return {
+            "mean": 0.0, "std": 0.0, "max": 0.0, "min": 0.0, "range": 0.0,
+            "median": 0.0, "skew": 0.0, "frame_var": 0.0, "motion_count": 0
+        }
 
-    motionStats = []
+    motionMeans = []
+    motionCounts = []
     prevGray = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY)
 
     for frame in frames[1:]:
@@ -102,26 +108,31 @@ def motionScore(videoPath):
             0.5, 3, 15, 3, 5, 1.2, 0
         )
         mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-        motionStats.append({
-            "mean": float(np.mean(mag)),
-            "std": float(np.std(mag)),
-            "max": float(np.max(mag))
-        })
+        motionMeans.append(np.mean(mag))
+        motionCounts.append(np.sum(mag > 1.0))  #number of active pixels
 
         prevGray = gray
 
-    if not motionStats:
-        return 0.0
+    motionMeans = np.array(motionMeans)
 
-    return np.mean([m["mean"] for m in motionStats])
+    return {
+        "mean": float(np.mean(motionMeans)),
+        "std": float(np.std(motionMeans)),
+        "max": float(np.max(motionMeans)),
+        "min": float(np.min(motionMeans)),
+        "range": float(np.max(motionMeans) - np.min(motionMeans)),
+        "median": float(np.median(motionMeans)),
+        "skew": float(skew(motionMeans)),
+        "frame_var": float(np.var(motionMeans)),
+        "motion_count": int(np.mean(motionCounts))
+    }
 
 def classifyByMotion(path, threshold=MOTION_THRESHOLD):
-    score = motionScore(path)
+    score = motionFeatures(path)["mean"]
     return 1 if score >= threshold else 0
 
 def evaluate(threshold=MOTION_THRESHOLD):
-    preds, labels = [], []
+    preds, labels, scores = [], [], []
     for labelDir in ["Violence", "NonViolence"]:
         fullPath = os.path.join(VIDEO_DIR, labelDir)
         if not os.path.isdir(fullPath):
@@ -130,10 +141,15 @@ def evaluate(threshold=MOTION_THRESHOLD):
             if not fname.endswith(".mp4"):
                 continue
             fpath = os.path.join(fullPath, fname)
-            pred = classifyByMotion(fpath, threshold=threshold)
+            features = motionFeatures(fpath)
+            score = features["mean"]
+            pred = 1 if score >= threshold else 0
+
             preds.append(pred)
+            scores.append(score)
             labels.append(LABEL_MAP[labelDir])
-    return preds, labels
+
+    return preds, labels, scores
 
 if __name__ == "__main__":
     videoPaths = []
@@ -146,9 +162,10 @@ if __name__ == "__main__":
                 videoPaths.append(os.path.join(fullPath, fname))
                 labels.append(LABEL_MAP[labelDir])
 
-    #best_threshold, _ = sweepThresholds(videoPaths, labels)
+    for feat in ["mean", "std", "range", "motion_count"]:
+        sweepFeatureThreshold(videoPaths, labels, feature=feat)
 
-    preds, labels = evaluate()
+    preds, labels, scores = evaluate()
 
     print("confusion matrix: " + str(confusion_matrix(labels, preds)))
     print("classification report: " + str(classification_report(labels, preds)))
@@ -156,4 +173,4 @@ if __name__ == "__main__":
     print("f1 score: " + str(f1_score(labels, preds)))
     print("precision: " + str(precision_score(labels, preds)))
     print("recall: " + str(recall_score(labels, preds)))
-    print("roc_auc: " + str(roc_auc_score(labels, preds)))
+    print("roc_auc: " + str(roc_auc_score(labels, scores)))
