@@ -6,7 +6,6 @@ preprocessed/
 preprocessed.zip
 logs/
 test_videos/
-slurm*.sh
 results.csv
 test_videos/
 evaluation_plots/

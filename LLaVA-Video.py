@@ -41,6 +41,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 videoFrames = 20
 frameInterval = 15
 maxFrames = 32
+#threshold =
 
 #dataset setup
 datasetPath = kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset")
@@ -173,7 +174,7 @@ def plotMetrics(results, save_dir="evaluation_plots"):
     except Exception as e:
         print(f"Could not plot ROC curve: {e}")
 
-def threshold_sweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
+def thresholdSweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
     outputs = trainer.predict(dataset)
     logits = outputs.predictions
     labels = outputs.label_ids
@@ -253,8 +254,6 @@ else:
 
 trainer.save_model("timesformerTrained")
 
-trainer.evaluate()
-
 #test the model
 testResults = trainer.evaluate(eval_dataset=testDs)
 print("=== TEST RESULTS ===")
@@ -271,7 +270,7 @@ for key, name in [
     
 plotMetrics(testResults, save_dir="evaluation_plots")
 
-best_threshold = threshold_sweep(trainer, testDs)
+best_threshold = thresholdSweep(trainer, testDs)
 print(f"Best threshold for F1: {best_threshold['threshold']}")
 print(f"Best F1: {best_threshold['f1']}")
 print(f"Best Precision: {best_threshold['precision']}")
