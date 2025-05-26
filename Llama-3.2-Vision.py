@@ -1,4 +1,4 @@
-from transformers import MllamaForConditionalGeneration, AutoProcessor
+from transformers import MllamaForConditionalGeneration, AutoProcessor, GenerationConfig
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import textClassifier
@@ -28,6 +28,10 @@ model = MllamaForConditionalGeneration.from_pretrained(modelId, torch_dtype=torc
 model.tie_weights()
 model.eval()
 processor = AutoProcessor.from_pretrained(modelId)
+model.generation_config = GenerationConfig.from_pretrained(modelId)
+model.generation_config.max_new_tokens = maxTokens
+model.generation_config.pad_token_id = processor.tokenizer.pad_token_id
+model.generation_config.eos_token_id = processor.tokenizer.eos_token_id
 
 class frameDataset(Dataset):
     def __init__(self, frame_paths):
@@ -101,7 +105,7 @@ def cleanModelResponse(rawText, promptText):
 def analyseVideoFrames(videoId, framePaths, frameWriter):
     captions = []
     dataset = frameDataset(framePaths)
-    frameLoader = DataLoader(dataset, batch_size=4, shuffle=False, collate_fn=collate, num_workers=4)
+    frameLoader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=collate, num_workers=2, pin_memory=True, persistent_workers=True)
 
     batched_results = imageTest(frameLoader)
 
@@ -130,22 +134,24 @@ def imageTest(dataloader):
         images = batch["image"]
         paths = batch["path"]
 
-        for image, path in zip(images, paths):
-            message = [
-                {"role": "user", "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": prompt}
-                ]}
-            ]
-            inputPrompt = processor.apply_chat_template(message, add_generation_prompt=True)
-            inputs = processor(image, inputPrompt, add_special_tokens=False, return_tensors="pt").to(model.device)
+        messages = [
+            [{"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt}]}]
+            for image in images
+        ]
+        inputPrompts = processor.apply_chat_template(messages, add_generation_prompt=True)
+        
+        # this is key — nesting the images
+        nested_images = [[image] for image in images]
 
-            with torch.no_grad():
-                output_ids = model.generate(**inputs, max_new_tokens=maxTokens)
+        inputs = processor(images=nested_images, text=inputPrompts, padding=True, return_tensors="pt").to(model.device)
 
-            decoded = processor.decode(output_ids[0], skip_special_tokens=True).lower()
+        with torch.no_grad():
+            output_ids = model.generate(**inputs)
+
+        for i in range(len(paths)):
+            decoded = processor.decode(output_ids[i], skip_special_tokens=True).lower()
             clean = cleanModelResponse(decoded, prompt)
-            results.append((path, clean))
+            results.append((paths[i], clean))
 
     return results
 
