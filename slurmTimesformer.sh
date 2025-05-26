@@ -20,6 +20,6 @@ echo "Running on $(hostname)"
 
 echo "Starting training"
 # run your training script
-python LLaVA-Video.py
+python timesformer.py
 
 echo "Job finished with exit code $? at $(date)"

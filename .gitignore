@@ -1,12 +1,10 @@
-extractedFrames_/
 extractedFrames/
 results/
 venv/
 preprocessed/
-preprocessed.zip
-logs/
 test_videos/
 results.csv
+frameOutputs.csv
 test_videos/
 evaluation_plots/
 __pycache__/
@@ -15,3 +13,9 @@ OpticalLogs/
 timesformerLogs/
 LLMLogs/
 timesformerTrained/
+preprocessingLogs/
+*.json
+train_tensors/
+val_tensors/
+test_tensors/
+*.txt

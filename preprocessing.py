@@ -4,18 +4,39 @@ import torch
 import json
 import kagglehub
 import numpy as np
+from PIL import Image
 from tqdm import tqdm
 from scipy.stats import skew
+from sklearn.model_selection import train_test_split
+from torchvision.transforms import Compose, Resize, ColorJitter, ToTensor, RandomApply
 
 #config
-datasetRoot = os.path.join(kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"),"Real Life Violence Dataset")
+datasetRoot = os.path.join(
+    kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"),
+    "Real Life Violence Dataset"
+)
 frameOutputDir = "extractedFrames"
 featureOutputPath = "motion_features.json"
-tensorOutputDir = "test_videos"
-
+splitOutputPath = "split.json"
+tensorDirs = {
+    "train": "train_tensors",
+    "val": "val_tensors",
+    "test": "test_tensors"
+}
 numFrames = 20
 frameInterval = 15
 resizeShape = (224, 224)
+valRatio = 0.1
+testRatio = 0.1
+
+#preprocessing for each frame
+transform = Compose([
+    Resize((224, 224)),
+    RandomApply([ColorJitter(brightness=0.2)], p=0.2),
+    RandomApply([ColorJitter(contrast=0.2)], p=0.2),
+    RandomApply([ColorJitter(saturation=0.2)], p=0.2),
+    RandomApply([ColorJitter(hue=0.1)], p=0.2)
+])
 
 def extractUniformFrames(videoPath, maxFrames=numFrames, interval=frameInterval):
     cap = cv2.VideoCapture(videoPath)
@@ -30,7 +51,8 @@ def extractUniformFrames(videoPath, maxFrames=numFrames, interval=frameInterval)
         ret, frame = cap.read()
         if not ret:
             break
-        frame = cv2.resize(frame, resizeShape)
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        frame = np.array(transform(image))
         frames.append(frame)
 
     cap.release()
@@ -80,46 +102,72 @@ def computeMotionFeatures(frames):
 
 def saveFramesAsTensor(frames, outPath):
     tensor = torch.tensor(np.stack(frames), dtype=torch.uint8).permute(0, 3, 1, 2)
-    torch.save(tensor, outPath)
+    torch.save({"pixel_values": tensor}, outPath)
 
 def preprocessDataset():
-    os.makedirs(tensorOutputDir, exist_ok=True)
+    for d in tensorDirs.values():
+        os.makedirs(d, exist_ok=True)
     os.makedirs(frameOutputDir, exist_ok=True)
-    allFeatures = {}
-    totalVideos = 0
+
+    videoPaths, labels = [], []
 
     for label in ["Violence", "NonViolence"]:
         fullPath = os.path.join(datasetRoot, label)
-        for fileName in tqdm(os.listdir(fullPath), desc=f"Processing {label}"):
-            if not fileName.endswith(".mp4"):
-                continue
+        for fileName in os.listdir(fullPath):
+            if fileName.endswith(".mp4"):
+                videoPaths.append(os.path.join(fullPath, fileName))
+                labels.append(label)
 
-            videoPath = os.path.join(fullPath, fileName)
-            baseName = os.path.splitext(fileName)[0]
-            taggedName = f"{label}_{baseName}"
-            ptPath = os.path.join(tensorOutputDir, f"{taggedName}.pt")
+    #split off test set
+    trainValPaths, testPaths, trainValLabels, testLabels = train_test_split(
+        videoPaths, labels, test_size=testRatio, stratify=labels, random_state=42
+    )
 
-            if os.path.exists(ptPath):
-                continue
+    #split train into train and val
+    trainPaths, valPaths, _, _ = train_test_split(
+        trainValPaths, trainValLabels, test_size=valRatio / (1.0 - testRatio),
+        stratify=trainValLabels, random_state=42
+    )
 
-            #extract frames once
-            frames = extractUniformFrames(videoPath)
-            if len(frames) < 2:
-                continue
+    splitMap = {}
+    for path in trainPaths:
+        splitMap[path] = "train"
+    for path in valPaths:
+        splitMap[path] = "val"
+    for path in testPaths:
+        splitMap[path] = "test"
 
-            #use exact same frames for all outputs
-            saveFramesAsJpg(frames, taggedName)             #for LLaVA
-            saveFramesAsTensor(frames, ptPath)              #for Timesformer
-            allFeatures[videoPath] = computeMotionFeatures(frames)  #for Random Forest
-            totalVideos += 1
+    allFeatures = {}
+    totalVideos = 0
+
+    for path in tqdm(videoPaths, desc="Processing videos"):
+        label = os.path.basename(os.path.dirname(path))
+        baseName = os.path.splitext(os.path.basename(path))[0]
+        taggedName = f"{label}_{baseName}"
+        split = splitMap[path]
+        outPath = os.path.join(tensorDirs[split], f"{taggedName}.pt")
+
+        frames = extractUniformFrames(path)
+        if len(frames) < 2:
+            continue
+        if split == "test":
+            saveFramesAsJpg(frames, taggedName)
+        saveFramesAsTensor(frames, outPath)
+        allFeatures[path] = computeMotionFeatures(frames)
+        totalVideos += 1
 
     with open(featureOutputPath, "w") as f:
         json.dump(allFeatures, f, indent=2)
 
-    print(f"\nPreprocessing complete. {totalVideos} test videos processed.")
+    with open(splitOutputPath, "w") as f:
+        json.dump(splitMap, f, indent=2)
+
+    print(f"\nPreprocessing complete. {totalVideos} videos processed.")
+    for split, folder in tensorDirs.items():
+        print(f"{split.capitalize()} tensors: {folder}/")
     print(f"Frames saved to: {frameOutputDir}/")
-    print(f"Features saved to: {featureOutputPath}")
-    print(f"Tensors saved to: {tensorOutputDir}/")
+    print(f"Motion features saved to: {featureOutputPath}")
+    print(f"Split map saved to: {splitOutputPath}")
 
 if __name__ == "__main__":
     preprocessDataset()

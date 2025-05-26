@@ -1,8 +1,11 @@
 from transformers import MllamaForConditionalGeneration, AutoProcessor
+from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import textClassifier
+from tqdm import tqdm
 import kagglehub
 import torch
+import time
 import csv
 import os
 import cv2
@@ -10,7 +13,13 @@ import cv2
 #config
 modelId = "meta-llama/Llama-3.2-11B-Vision-Instruct"
 frameDirectory = "extractedFrames"
-prompt ="This image is part of a public dataset of street and public scenes used for academic research. start your response with a yes or no if violence depicted in this image then describe what is happening in this image, If there is a violent or aggressive action, explain what it is and who is involved, If there isnt any violence, describe the scene as peaceful or non-violent, use simple language and avoid complex terms where possible. "
+prompt = (
+    "This image is part of a public dataset of street and public scenes used for academic research. "
+    "Start your response with a yes or no if violence is depicted in this image. "
+    "Then describe what is happening. If there is a violent or aggressive action, explain it and who is involved. "
+    "If there isn't any violence, describe the scene as peaceful or non-violent. "
+    "Use simple language and avoid complex terms where possible."
+)
 maxTokens = 300
 resultsPath = "results.csv"
 
@@ -20,62 +29,38 @@ model.tie_weights()
 model.eval()
 processor = AutoProcessor.from_pretrained(modelId)
 
+class frameDataset(Dataset):
+    def __init__(self, frame_paths):
+        self.frame_paths = frame_paths
+
+    def __len__(self):
+        return len(self.frame_paths)
+
+    def __getitem__(self, idx):
+        path = self.frame_paths[idx]
+        image = Image.open(path).convert("RGB")
+        return {"image": image, "path": path}
+    
+def collate(batch):
+    images = [item["image"] for item in batch]
+    paths = [item["path"] for item in batch]
+    return {"image": images, "path": paths}
+    
 def groupFramesByVideo(directory):
     videoGroups = {}
     for fileName in os.listdir(directory):
         if not fileName.endswith(".jpg"):
             continue
         parts = fileName.split("_")
-        if len(parts) < 3:
+        if len(parts) < 4:
             continue
-        videoId = parts[1] + "_" + parts[2]  # e.g. NV_102
+        # e.g. Violence_V_1_0 → Violence_V_1
+        videoId = "_".join(parts[:3])
         if videoId not in videoGroups:
             videoGroups[videoId] = []
         videoGroups[videoId].append(os.path.join(directory, fileName))
+        videoGroups[videoId].sort(key=lambda x: int(os.path.splitext(x)[0].split("_")[-1]))
     return videoGroups
-
-
-def extractFramesFromTestVideos(ptDir, datasetRoot, outputDir="extractedFrames", frameRate=1):
-    os.makedirs(outputDir, exist_ok=True)
-    for ptFile in os.listdir(ptDir):
-        if not ptFile.endswith(".pt"):
-            continue
-
-        baseName = ptFile.removesuffix(".mp4.pt")
-        if baseName.startswith("NonViolence_"):
-            realName = baseName.replace("NonViolence_", "")  #NV_649
-            className = "NonViolence"
-        elif baseName.startswith("Violence_"):
-            realName = baseName.replace("Violence_", "")  #V_23
-            className = "Violence"
-        else:
-            print(f"Unrecognised prefix in: {baseName}")
-            continue
-
-        videoName = realName + ".mp4"
-        videoPath = os.path.join(datasetRoot, className, videoName)
-
-        if not os.path.exists(videoPath):
-            print(f"------Skipping {videoPath}, not found.------")
-            continue
-
-        cap = cv2.VideoCapture(videoPath)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frameInterval = int(fps * frameRate)
-        count, frameId = 0, 0
-
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if count % frameInterval == 0:
-                outName = f"{baseName}_{frameId}.jpg"
-                outPath = os.path.join(outputDir, outName)
-                cv2.imwrite(outPath, frame)
-                frameId += 1
-            count += 1
-        cap.release()
-        print(f"Extracted {frameId} frames from {videoName}")
 
 def cleanModelResponse(rawText, promptText):
     response = rawText.lower().strip()
@@ -94,37 +79,39 @@ def cleanModelResponse(rawText, promptText):
 
     return response
 
-def checkViolenceInFrame(framePath):
-    image = Image.open(framePath).convert("RGB")
-    messages = [
-        {"role": "user", "content": [
-            {"type": "image"},
-            {"type": "text", "text": prompt}
-        ]}
-    ]
-    inputText = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(image, inputText, add_special_tokens=False, return_tensors="pt").to(model.device)
+# def checkViolenceInFrame(framePath):
+#     image = Image.open(framePath).convert("RGB")
+#     messages = [
+#         {"role": "user", "content": [
+#             {"type": "image"},
+#             {"type": "text", "text": prompt}
+#         ]}
+#     ]
+#     inputText = processor.apply_chat_template(messages, add_generation_prompt=True)
+#     inputs = processor(image, inputText, add_special_tokens=False, return_tensors="pt").to(model.device)
 
-    with torch.no_grad():
-        outputIds = model.generate(**inputs, max_new_tokens=maxTokens)
-        result = processor.decode(outputIds[0], skip_special_tokens=True).lower()
-        result = cleanModelResponse(result, prompt)
+#     with torch.no_grad():
+#         outputIds = model.generate(**inputs, max_new_tokens=maxTokens)
+#         result = processor.decode(outputIds[0], skip_special_tokens=True).lower()
+#         result = cleanModelResponse(result, prompt)
 
-    print(f"{os.path.basename(framePath)} → {result}\n")
-    return  result
+#     print(f"{os.path.basename(framePath)} → {result}\n")
+#     return  result
 
-#analyse all frames in one video
 def analyseVideoFrames(videoId, framePaths, frameWriter):
     captions = []
-    for path in framePaths:
-        response = checkViolenceInFrame(path)
+    dataset = frameDataset(framePaths)
+    frameLoader = DataLoader(dataset, batch_size=4, shuffle=False, collate_fn=collate, num_workers=4)
+
+    batched_results = imageTest(frameLoader)
+
+    for path, response in batched_results:
         refusal = checkBoilerplate(response)
         if refusal is not None:
             response = response + " " + refusal
         label = textClassifier.classify(response)["label"]
         captions.append(response)
 
-        #log each frame result
         frameWriter.writerow([
             videoId,
             os.path.basename(path),
@@ -133,33 +120,48 @@ def analyseVideoFrames(videoId, framePaths, frameWriter):
         ])
 
         if label == "violent":
-            return True, None, response  #stop early if violence is detected
+            return True, None, response  # stop early if violence detected
 
     return False, captions, None
 
+def imageTest(dataloader):
+    results = []
+    for batch in dataloader:
+        images = batch["image"]
+        paths = batch["path"]
 
+        for image, path in zip(images, paths):
+            message = [
+                {"role": "user", "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt}
+                ]}
+            ]
+            inputPrompt = processor.apply_chat_template(message, add_generation_prompt=True)
+            inputs = processor(image, inputPrompt, add_special_tokens=False, return_tensors="pt").to(model.device)
+
+            with torch.no_grad():
+                output_ids = model.generate(**inputs, max_new_tokens=maxTokens)
+
+            decoded = processor.decode(output_ids[0], skip_special_tokens=True).lower()
+            clean = cleanModelResponse(decoded, prompt)
+            results.append((path, clean))
+
+    return results
 
 def checkBoilerplate(text):
     text = text.lower()
     if "cutting knowledge date" in text or "today date" in text:
         return "this image was not described due to model refusal."
-    
-    elif"i cannot provide" in text or "not appropriate to describe" in text or "i can't help with that request." in text:
+
+    elif "i cannot provide" in text or "not appropriate to describe" in text or "i can't help with that request." in text:
         return "Violence was detected but not described due to model refusal."
 
     return None
 
 if __name__ == "__main__":
-    frameResultsPath = "frameOutputs.csv"
-    datasetPath = os.path.join(
-        kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"),
-        "Real Life Violence Dataset"
-    )
-
-    extractFramesFromTestVideos("test_videos", datasetPath)
-
     groupedFrames = groupFramesByVideo(frameDirectory)
-    with open(resultsPath, "a", newline='', encoding="utf-8", buffering=1) as csvfile, open(frameResultsPath, "w", newline='', encoding="utf-8", buffering=1) as framefile:
+    with open(resultsPath, "a", newline='', encoding="utf-8", buffering=1) as csvfile, open("frameOutputs.csv", "w", newline='', encoding="utf-8", buffering=1) as framefile:
         videoWriter = csv.writer(csvfile)
         frameWriter = csv.writer(framefile)
 
@@ -169,11 +171,10 @@ if __name__ == "__main__":
 
         print(f"\nAnalysing {len(groupedFrames)} videos...\n")
         print("VideoID,ViolenceDetected")
-
-        for videoId, frames in groupedFrames.items():
+        
+        startTime = time.time()
+        for videoId, frames in tqdm(groupedFrames.items(), desc="Analysing videos", unit="video"):
             print(f"\nAnalysing {videoId}...")
-            frames.sort()
-
             primaryIsViolent, captions, response = analyseVideoFrames(videoId, frames, frameWriter)
             finalIsViolent = primaryIsViolent
             secondaryDecision = "N/A"
@@ -208,3 +209,5 @@ if __name__ == "__main__":
             ])
 
             print(f"{videoId} Final: {'Yes' if finalIsViolent else 'No'}")
+        endTime = time.time()
+        print(f"Processing time for {videoId}: {endTime - startTime:.2f} seconds")

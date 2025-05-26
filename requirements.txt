@@ -12,3 +12,5 @@ av
 scikit-learn
 seaborn
 matplotlib
+protobuf 
+tiktoken

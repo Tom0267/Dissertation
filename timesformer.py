@@ -1,14 +1,13 @@
 import os
+import time
 import socket
 import torch
 import shutil
-import kagglehub
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+from torch.utils.data import Dataset
 from sklearn.metrics import RocCurveDisplay
-from torch.utils.data import Dataset, random_split
-from torchvision.transforms import Compose, Resize, ToTensor, Normalize, ColorJitter, RandomApply
 from transformers import (
     AutoImageProcessor,
     TimesformerForVideoClassification,
@@ -27,6 +26,38 @@ from sklearn.metrics import (
     classification_report
 )
 
+class ViolenceDataset(Dataset):
+    def __init__(self, rootDir):
+        self.samples = sorted([
+            os.path.join(rootDir, f)
+            for f in os.listdir(rootDir)
+            if f.endswith(".pt")
+        ])
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        filePath = self.samples[idx]
+        try:
+            data = torch.load(filePath, weights_only=True)
+            pixel_values = data["pixel_values"].float() / 255.0  #convert from uint8 to float32 and normalise
+            
+            expected_frames = 16
+            num_frames = pixel_values.shape[0]
+
+            if num_frames < expected_frames:
+                pad = torch.zeros((expected_frames - num_frames, *pixel_values.shape[1:]), dtype=pixel_values.dtype)
+                pixel_values = torch.cat([pixel_values, pad], dim=0)
+            elif num_frames > expected_frames:
+                pixel_values = pixel_values[:expected_frames]
+            return {
+                "pixel_values": pixel_values,
+                "labels": data.get("label", 0 if "NonViolence" in os.path.basename(filePath) else 1)
+            }
+        except Exception as e:
+            raise RuntimeError(f"Failed to load {filePath}: {e}")
+
 #slurm
 print("=== SLURM ENVIRONMENT INFO ===")
 print(f"Hostname: {socket.gethostname()}")
@@ -38,14 +69,6 @@ print("=== END SLURM INFO ===\n")
 #configuration
 modelName = "facebook/timesformer-base-finetuned-k400"
 device = "cuda" if torch.cuda.is_available() else "cpu"
-videoFrames = 20
-frameInterval = 15
-maxFrames = 32
-#threshold =
-
-#dataset setup
-datasetPath = kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset")
-datasetPath = os.path.join(datasetPath, "Real Life Violence Dataset")
 labelMap = {"NonViolence": 0, "Violence": 1}
 
 #model + processor
@@ -67,54 +90,9 @@ model = TimesformerForVideoClassification.from_pretrained(
 model.gradient_checkpointing_enable()
 model = model.to(device)
 
-#preprocessing for each frame
-transform = Compose([
-    Resize((224, 224)),
-    RandomApply([ColorJitter(brightness=0.2)], p=0.2),
-    RandomApply([ColorJitter(contrast=0.2)], p=0.2),
-    RandomApply([ColorJitter(saturation=0.2)], p=0.2),
-    RandomApply([ColorJitter(hue=0.1)], p=0.2),
-    ToTensor()
-])
-
-class ViolenceDataset(Dataset):
-    def __init__(self, rootDir):
-        self.samples = sorted([
-            os.path.join(rootDir, f)
-            for f in os.listdir(rootDir)
-            if f.endswith(".pt")
-        ])
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        filePath = self.samples[idx]
-        try:
-            data = torch.load(filePath)
-            return {
-                "pixel_values": data["pixel_values"],
-                "labels": data["label"]
-            }
-        except Exception as e:
-            raise RuntimeError(f"Failed to load {filePath}: {e}")
-
-#create dataset and train/val split
-dataset = ViolenceDataset("preprocessed")
-fullSize = len(dataset)
-trainSize = int(0.7 * fullSize)
-valSize = int(0.15 * fullSize)
-testSize = fullSize - trainSize - valSize
-
-trainDs, valDs, testDs = random_split(dataset, [trainSize, valSize, testSize])
-
-# copy files to test_videos
-testFilePaths = [dataset.samples[i] for i in testDs.indices]
-os.makedirs("test_videos", exist_ok=True)
-
-for src in testFilePaths:
-    dst = os.path.join("test_videos", os.path.basename(src))
-    shutil.copyfile(src, dst)
+trainDs = ViolenceDataset("train_tensors")
+testDs = ViolenceDataset("test_tensors")
+valDs = ViolenceDataset("val_tensors")
 
 def metrics(eval_pred, threshold=0.5):
     logits, labels = eval_pred
@@ -132,7 +110,7 @@ def metrics(eval_pred, threshold=0.5):
     except ValueError:
         roc_auc = float('nan')
 
-    cm = confusion_matrix(labels, preds)
+    cm = confusion_matrix(labels, preds, labels=[0, 1])
     report = classification_report(labels, preds, output_dict=True)
 
     return {
@@ -215,6 +193,10 @@ def thresholdSweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
     print(f"Best Threshold (F1): {best['threshold']} with F1 = {best['f1']:.4f}")
     return best
 
+def dataBatcher(batch):
+    pixel_values = torch.stack([item["pixel_values"] for item in batch])
+    labels = torch.tensor([item["labels"] for item in batch])
+    return {"pixel_values": pixel_values, "labels": labels}
 
 #training args
 args = TrainingArguments(
@@ -231,8 +213,7 @@ args = TrainingArguments(
     output_dir="./timesformerOutput",
     save_total_limit=2,
     metric_for_best_model="accuracy",
-    greater_is_better=True,
-    
+    greater_is_better=True
 )
 
 #trainer
@@ -242,7 +223,8 @@ trainer = Trainer(
     train_dataset=trainDs,
     eval_dataset=valDs,
     compute_metrics=metrics,
-    callbacks= [EarlyStoppingCallback(early_stopping_patience=3)]
+    callbacks= [EarlyStoppingCallback(early_stopping_patience=3)],
+    data_collator=dataBatcher
 )
 
 if trainer.state.best_model_checkpoint and os.path.exists(trainer.state.best_model_checkpoint):
@@ -255,7 +237,10 @@ else:
 trainer.save_model("timesformerTrained")
 
 #test the model
-testResults = trainer.evaluate(eval_dataset=testDs)
+startTime = time.time()
+testResults = trainer.predict(eval_dataset=testDs)
+endTime = time.time()
+print(f"\nPrediction time: {endTime - startTime:.2f} seconds")
 print("=== TEST RESULTS ===")
 for key, name in [
     ("accuracy", "Accuracy"),
@@ -267,7 +252,8 @@ for key, name in [
     ("classification_report", "Classification Report")
 ]:
     print(f"{name}: {testResults.get(f'eval_{key}', 'N/A')}")
-    
+    print(f"Prediction time: {endTime - startTime:.2f} seconds")
+
 plotMetrics(testResults, save_dir="evaluation_plots")
 
 best_threshold = thresholdSweep(trainer, testDs)
