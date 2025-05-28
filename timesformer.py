@@ -57,9 +57,7 @@ class ViolenceDataset(Dataset):
                 pixel_values = pixel_values[:expected_frames]
             return {
                 "pixel_values": pixel_values,
-                "labels": data.get(
-                    "label", 0 if "NonViolence" in os.path.basename(filePath) else 1
-                ),
+                "labels": 0 if os.path.basename(filePath).startswith("NonViolence_") else 1,
             }
         except Exception as e:
             raise RuntimeError(f"Failed to load {filePath}: {e}")
@@ -77,6 +75,7 @@ print("=== END SLURM INFO ===\n")
 modelName = "facebook/timesformer-base-finetuned-k400"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 labelMap = {"NonViolence": 0, "Violence": 1}
+TRAINED = os.path.exists("timesformerTrained/model.safetensors")
 
 # model + processor
 processor = AutoImageProcessor.from_pretrained(modelName, use_fast=False)
@@ -88,17 +87,22 @@ config.num_labels = 2
 config.hidden_dropout_prob = 0.2
 config.attention_probs_dropout_prob = 0.2
 
-# load the model but ignore the mismatched head
-model = TimesformerForVideoClassification.from_pretrained(
-    modelName, config=config, ignore_mismatched_sizes=True
-)
-model.gradient_checkpointing_enable()
-model = model.to(device)
-
-trainDs = ViolenceDataset("train_tensors")
-testDs = ViolenceDataset("test_tensors")
-valDs = ViolenceDataset("val_tensors")
-
+if not TRAINED:
+    # load the model but ignore the mismatched head
+    model = TimesformerForVideoClassification.from_pretrained(
+        modelName, config=config, ignore_mismatched_sizes=True
+    )
+    model.gradient_checkpointing_enable()
+    model = model.to(device)
+    model.classifier = torch.nn.Linear(model.config.hidden_size, 2)
+    
+    trainDs = ViolenceDataset("RLVS/train_tensors")
+    testDs = ViolenceDataset("test_tensors")
+    valDs = ViolenceDataset("RLVS/val_tensors")
+    
+else:
+    model = TimesformerForVideoClassification.from_pretrained("timesformerTrained", config=config)
+    testDs = ViolenceDataset("test_tensors")
 
 def metrics(eval_pred, threshold=0.3):      #threshold determined by thresholdSweep
     logits, labels = eval_pred
@@ -218,33 +222,43 @@ def dataBatcher(batch):
     labels = torch.tensor([item["labels"] for item in batch])
     return {"pixel_values": pixel_values, "labels": labels}
 
+if not TRAINED:
+    # training args
+    args = TrainingArguments(
+        per_device_train_batch_size=1,
+        eval_strategy="epoch",
+        num_train_epochs=10,
+        logging_dir="./logs",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        logging_steps=20,
+        fp16=torch.cuda.is_available(),
+        weight_decay=0.05,
+        max_grad_norm=1.0,
+        output_dir="./timesformerOutput",
+        save_total_limit=2,
+        metric_for_best_model="accuracy",
+        greater_is_better=True,
+    )
 
-# training args
-args = TrainingArguments(
-    per_device_train_batch_size=1,
-    eval_strategy="epoch",
-    num_train_epochs=10,
-    logging_dir="./logs",
-    save_strategy="epoch",
-    load_best_model_at_end=True,
-    logging_steps=20,
-    fp16=torch.cuda.is_available(),
-    weight_decay=0.05,
-    max_grad_norm=1.0,
-    output_dir="./timesformerOutput",
-    save_total_limit=2,
-    metric_for_best_model="accuracy",
-    greater_is_better=True,
-)
-
-# trainer
-trainer = Trainer(
+    # trainer
+    trainer = Trainer(
+        model=model,
+        args=args,
+        train_dataset=trainDs,
+        eval_dataset=valDs,
+        compute_metrics=metrics,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+        data_collator=dataBatcher,
+    )
+else:
+    trainer = Trainer(
     model=model,
-    args=args,
-    train_dataset=trainDs,
-    eval_dataset=valDs,
+    args=TrainingArguments(
+        output_dir="./timesformerOutput",  # required by Trainer
+        per_device_eval_batch_size=1,
+    ),
     compute_metrics=metrics,
-    callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     data_collator=dataBatcher,
 )
 
@@ -254,7 +268,7 @@ if trainer.state.best_model_checkpoint and os.path.exists(
     print("Resuming from checkpoint...")
     trainer.train(resume_from_checkpoint=trainer.state.best_model_checkpoint)
     trainer.save_model("timesformerTrained")
-elif not os.path.exists("timesformerTrained/model.safetensors"):
+elif not TRAINED:
     print("Starting training from scratch...")
     trainer.train()
     trainer.save_model("timesformerTrained")

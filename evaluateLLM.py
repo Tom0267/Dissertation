@@ -13,9 +13,10 @@ df = pd.read_csv(resultsCsv)
 
 #true label from ID
 def inferTrueLabel(videoId):
-    if videoId.startswith("NV_"):
+    videoId = videoId.lower()
+    if videoId.startswith("nonviolence_nv"):
         return "non-violent"
-    elif videoId.startswith("V_"):
+    elif videoId.startswith("violence_v"):
         return "violent"
     return "unknown"
 
@@ -50,8 +51,17 @@ print(f"Saved {len(wrongChangeVideos)} incorrect secondary decisions to {mistake
 
 #full evaluation
 df["PredLabel"] = df["FinalPred"]
-y_true = df["TrueLabel"]
-y_pred = df["PredLabel"]
+#y_true = df["TrueLabel"]
+#y_pred = df["PredLabel"]
+
+valid_mask = df["TrueLabel"].isin(["violent", "non-violent"]) & df["PredLabel"].isin(["violent", "non-violent"])
+filtered_df = df[valid_mask]
+
+y_true = filtered_df["TrueLabel"]
+y_pred = filtered_df["PredLabel"]
+
+print("y_true unique:", set(y_true))
+print("y_pred unique:", set(y_pred))
 
 accuracy = accuracy_score(y_true, y_pred)
 precision = precision_score(y_true, y_pred, pos_label="violent")

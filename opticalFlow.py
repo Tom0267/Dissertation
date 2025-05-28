@@ -7,34 +7,81 @@ import time
 import os
 
 # config
+trainFeaturePath = "RLVS/motion_features.json"
+trainSplitPath = "RLVS/split.json"
+testFeaturePath = "motion_features.json"
 featurePath = "motion_features.json"
-splitPath = "split.json"
+#splitPath = "split.json"
 labelMap = {"Violence": 1, "NonViolence": 0}
 
 # load features and split info
 with open(featurePath, "r") as f:
     featuresByPath = json.load(f)
 
-with open(splitPath, "r") as f:
+with open(trainSplitPath, "r") as f:
     splitMap = json.load(f)
 
 # prepare data
-X_train, y_train, X_test, y_test = [], [], [], []
-featureNames = list(next(iter(featuresByPath.values())).keys())
+# load RLVS training features
+with open(trainFeaturePath, "r") as f:
+    featuresByPathTrain = json.load(f)
 
-for path, features in featuresByPath.items():
-    if path not in splitMap:
-        continue  # skip if not in split
-    labelStr = os.path.basename(os.path.dirname(path))
-    label = labelMap[labelStr]
-    featVec = list(features.values())
+# load Hockey Fights test features
+with open(testFeaturePath, "r") as f:
+    featuresByPathTest = json.load(f)
 
-    if splitMap[path] == "train":
-        X_train.append(featVec)
-        y_train.append(label)
-    elif splitMap[path] == "test":
-        X_test.append(featVec)
-        y_test.append(label)
+# get feature names from training set
+featureNames = list(next(iter(featuresByPathTrain.values())).keys())
+X_train, y_train = [], []
+for fullPath, features in featuresByPathTrain.items():
+    if fullPath not in splitMap or splitMap[fullPath] != "train":
+        continue
+
+    labelFolder = os.path.basename(os.path.dirname(fullPath)).lower()
+    if labelFolder in ["violence", "fights"]:
+        label = 1
+    elif labelFolder in ["nonviolence", "nofights"]:
+        label = 0
+    else:
+        print(f"Skipping unlabelled training key: {fullPath}")
+        continue
+
+    X_train.append(list(features.values()))
+    y_train.append(label)
+    
+print(X_train[:5])
+print(y_train[:5])
+
+X_test, y_test = [], []
+for name, features in featuresByPathTest.items():
+    labelPrefix = name.split("_")[0].lower()
+    if labelPrefix in ["violence", "fights", "v"]:
+        label = 1
+    elif labelPrefix in ["nonviolence", "nofights", "nv"]:
+        label = 0
+    else:
+        print(f"Skipping unlabelled test key: {name}")
+        continue
+
+    X_test.append(list(features.values()))
+    y_test.append(label)
+    
+print(X_test[:5])  # print first 5 test samples
+print(y_test[:5])  # print first 5 test labels
+
+# for path, features in featuresByPath.items():
+#     if path not in splitMap:
+#         continue  # skip if not in split
+#     labelStr = os.path.basename(os.path.dirname(path))
+#     label = labelMap[labelStr]
+#     featVec = list(features.values())
+
+#     if splitMap[path] == "train":
+#         X_train.append(featVec)
+#         y_train.append(label)
+#     elif splitMap[path] == "test":
+#         X_test.append(featVec)
+#         y_test.append(label)
 
 # sanity check
 if not X_test or not X_train:

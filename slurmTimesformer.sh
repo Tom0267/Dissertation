@@ -18,7 +18,7 @@ echo "Running on $(hostname)"
 #echo "preparing data"
 #python timesformerPreprocessing.py
 
-echo "Starting training"
+echo "Starting timesformer"
 # run your training script
 python timesformer.py
 

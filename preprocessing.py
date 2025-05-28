@@ -11,10 +11,8 @@ from sklearn.model_selection import train_test_split
 from torchvision.transforms import Compose, Resize, ColorJitter, ToTensor, RandomApply
 
 #config
-datasetRoot = os.path.join(
-    kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"),
-    "Real Life Violence Dataset"
-)
+#datasetRoot = os.path.join(kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"),"Real Life Violence Dataset")
+datasetRoot = "/mnt/nfs/homes/ditchfit/.cache/kagglehub/datasets/seldaertrk/hockey-fight/versions/1/data"
 frameOutputDir = "extractedFrames"
 featureOutputPath = "motion_features.json"
 splitOutputPath = "split.json"
@@ -103,6 +101,13 @@ def computeMotionFeatures(frames):
 def saveFramesAsTensor(frames, outPath):
     tensor = torch.tensor(np.stack(frames), dtype=torch.uint8).permute(0, 3, 1, 2)
     torch.save({"pixel_values": tensor}, outPath)
+    
+def saveSplit(paths, label_map, split_name, split_map):
+    for path in paths:
+        label = label_map[path]
+        base_name = os.path.splitext(os.path.basename(path))[0]
+        tagged_name = f"{label}_{base_name}"
+        split_map[tagged_name] = split_name
 
 def preprocessDataset():
     for d in tensorDirs.values():
@@ -111,12 +116,29 @@ def preprocessDataset():
 
     videoPaths, labels = [], []
 
-    for label in ["Violence", "NonViolence"]:
-        fullPath = os.path.join(datasetRoot, label)
+    for folder in os.listdir(datasetRoot):
+        fullPath = os.path.join(datasetRoot, folder)
+        if not os.path.isdir(fullPath):
+            continue
         for fileName in os.listdir(fullPath):
-            if fileName.endswith(".mp4"):
-                videoPaths.append(os.path.join(fullPath, fileName))
+            if fileName.endswith(".mp4") or fileName.endswith(".avi"):
+                path = os.path.join(fullPath, fileName)
+
+                #map folder to label
+                if folder.lower() == "nofights":
+                    label = "NonViolence"
+                elif folder.lower() == "fights":
+                    label = "Violence"
+                else:
+                    continue
+
+                videoPaths.append(path)
                 labels.append(label)
+                
+    if len(videoPaths) == 0 or len(set(labels)) < 2:
+        raise RuntimeError("No videos were found or only one class present. Check dataset folder or file extensions.")
+    
+    labelMap = {path: label for path, label in zip(videoPaths, labels)}
 
     #split off test set
     trainValPaths, testPaths, trainValLabels, testLabels = train_test_split(
@@ -130,21 +152,24 @@ def preprocessDataset():
     )
 
     splitMap = {}
-    for path in trainPaths:
-        splitMap[path] = "train"
-    for path in valPaths:
-        splitMap[path] = "val"
-    for path in testPaths:
-        splitMap[path] = "test"
-
+    #saveSplit(trainPaths, labelMap, "train", splitMap)
+    #saveSplit(valPaths, labelMap, "val", splitMap)
+    #saveSplit(testPaths, labelMap, "test", splitMap)
+    saveSplit(videoPaths, labelMap, "test", splitMap)               #only for the test dataset
+    
     allFeatures = {}
     totalVideos = 0
 
     for path in tqdm(videoPaths, desc="Processing videos"):
-        label = os.path.basename(os.path.dirname(path))
+        label = labelMap[path]
+        if label.lower() == "nofights":
+            label = "NonViolence"
+        elif label.lower() == "fights":
+            label = "Violence"
         baseName = os.path.splitext(os.path.basename(path))[0]
         taggedName = f"{label}_{baseName}"
-        split = splitMap[path]
+        
+        split = splitMap[taggedName]
         outPath = os.path.join(tensorDirs[split], f"{taggedName}.pt")
 
         frames = extractUniformFrames(path)
@@ -153,7 +178,7 @@ def preprocessDataset():
         if split == "test":
             saveFramesAsJpg(frames, taggedName)
         saveFramesAsTensor(frames, outPath)
-        allFeatures[path] = computeMotionFeatures(frames)
+        allFeatures[taggedName] = computeMotionFeatures(frames)
         totalVideos += 1
 
     with open(featureOutputPath, "w") as f:
