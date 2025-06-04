@@ -6,31 +6,31 @@ import json
 import time
 import os
 
-# config
+#config
 trainFeaturePath = "RLVS/motion_features.json"
 trainSplitPath = "RLVS/split.json"
-testFeaturePath = "motion_features.json"
-featurePath = "motion_features.json"
+testFeaturePath = "RLVS/motion_features.json"
+featurePath = "RLVS/motion_features.json"
 #splitPath = "split.json"
 labelMap = {"Violence": 1, "NonViolence": 0}
 
-# load features and split info
+#load features and split info
 with open(featurePath, "r") as f:
     featuresByPath = json.load(f)
 
 with open(trainSplitPath, "r") as f:
     splitMap = json.load(f)
 
-# prepare data
-# load RLVS training features
+#prepare data
+#load RLVS training features
 with open(trainFeaturePath, "r") as f:
     featuresByPathTrain = json.load(f)
 
-# load Hockey Fights test features
+#load Hockey Fights test features
 with open(testFeaturePath, "r") as f:
     featuresByPathTest = json.load(f)
 
-# get feature names from training set
+#get feature names from training set
 featureNames = list(next(iter(featuresByPathTrain.values())).keys())
 X_train, y_train = [], []
 for fullPath, features in featuresByPathTrain.items():
@@ -54,7 +54,11 @@ print(y_train[:5])
 
 X_test, y_test = [], []
 for name, features in featuresByPathTest.items():
-    labelPrefix = name.split("_")[0].lower()
+
+    filename = os.path.basename(name)  # "NV_993.mp4"
+    labelPrefix = filename.split("_")[0].lower()
+    if name not in splitMap or splitMap[name] != "test":
+        continue
     if labelPrefix in ["violence", "fights", "v"]:
         label = 1
     elif labelPrefix in ["nonviolence", "nofights", "nv"]:
@@ -66,28 +70,28 @@ for name, features in featuresByPathTest.items():
     X_test.append(list(features.values()))
     y_test.append(label)
     
-print(X_test[:5])  # print first 5 test samples
-print(y_test[:5])  # print first 5 test labels
+print(X_test[:5])  #print first 5 test samples
+print(y_test[:5])  #print first 5 test labels
 
-# for path, features in featuresByPath.items():
-#     if path not in splitMap:
-#         continue  # skip if not in split
-#     labelStr = os.path.basename(os.path.dirname(path))
-#     label = labelMap[labelStr]
-#     featVec = list(features.values())
+#for path, features in featuresByPath.items():
+#    if path not in splitMap:
+#        continue  #skip if not in split
+#    labelStr = os.path.basename(os.path.dirname(path))
+#    label = labelMap[labelStr]
+#    featVec = list(features.values())
 
-#     if splitMap[path] == "train":
-#         X_train.append(featVec)
-#         y_train.append(label)
-#     elif splitMap[path] == "test":
-#         X_test.append(featVec)
-#         y_test.append(label)
+#    if splitMap[path] == "train":
+#        X_train.append(featVec)
+#        y_train.append(label)
+#    elif splitMap[path] == "test":
+#        X_test.append(featVec)
+#        y_test.append(label)
 
-# sanity check
+#sanity check
 if not X_test or not X_train:
     raise RuntimeError("One of the splits is empty. Check your preprocessing step.")
 
-# train using best parameters
+#train using best parameters
 clf = RandomForestClassifier(
     n_estimators=50,
     max_depth=8,
@@ -104,7 +108,7 @@ y_pred = clf.predict(X_test)
 y_proba = clf.predict_proba(X_test)[:, 1]
 endTime = time.time()
 
-# evaluation
+#evaluation
 print("\n=== Random Forest Evaluation ===")
 print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
 print("\nClassification Report:\n", classification_report(y_test, y_pred))
@@ -115,7 +119,7 @@ print("Recall:", recall_score(y_test, y_pred))
 print("ROC AUC:", roc_auc_score(y_test, y_proba))
 print(f"Prediction time: {endTime - startTime:.2f} seconds")
 
-# plot feature importance
+#plot feature importance
 importances = clf.feature_importances_
 plt.figure(figsize=(8, 5))
 plt.barh(featureNames, importances)
@@ -124,8 +128,17 @@ plt.title("Random Forest Feature Importance")
 plt.tight_layout()
 plt.show()
 
-# plot ROC curve
+#plot ROC curve
 RocCurveDisplay.from_predictions(y_test, y_proba)
 plt.title("ROC Curve - Random Forest")
 plt.tight_layout()
-plt.show()
+plt.savefig("random_forest_roc_curve.png")
+
+if not os.path.exists("feature_importances"):
+    os.makedirs("feature_importances")
+plt.figure(figsize=(8, 5))
+plt.barh(featureNames, importances)
+plt.xlabel("Importance")
+plt.title("Random Forest Feature Importance")
+plt.tight_layout()
+plt.savefig("random_forest_feature_importance.png")

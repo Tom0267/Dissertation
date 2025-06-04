@@ -5,7 +5,6 @@ preprocessed/
 test_videos/
 results.csv
 frameOutputs.csv
-test_videos/
 evaluation_plots/
 __pycache__/
 timesformerOutput/
@@ -19,3 +18,7 @@ train_tensors/
 val_tensors/
 test_tensors/
 *.txt
+RWF-2000/
+RLVS/
+hockeyFights/
+feature_importances/

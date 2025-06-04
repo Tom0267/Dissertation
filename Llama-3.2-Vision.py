@@ -101,7 +101,7 @@ def cleanModelResponse(rawText, promptText):
 
 #     print(f"{os.path.basename(framePath)} → {result}\n")
 #     return  result
-
+                                                      
 def analyseVideoFrames(videoId, framePaths, frameWriter):
     captions = []
     dataset = frameDataset(framePaths)

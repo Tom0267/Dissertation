@@ -2,7 +2,7 @@
 #SBATCH --job-name=opticalFlow-test
 #SBATCH --output=OpticalLogs/%x-%j.out
 #SBATCH --error=OpticalLogs/%x-%j.err
-#SBATCH --partition=a5000-16c64g-6h
+#SBATCH --partition=a5000-6h
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 

@@ -8,6 +8,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 from sklearn.metrics import RocCurveDisplay
+from sklearn.calibration import CalibrationDisplay
 from transformers import (
     AutoImageProcessor,
     TimesformerForVideoClassification,
@@ -40,21 +41,26 @@ class ViolenceDataset(Dataset):
         filePath = self.samples[idx]
         try:
             data = torch.load(filePath, weights_only=True)
-            pixel_values = (
-                data["pixel_values"].float() / 255.0
-            )  # convert from uint8 to float32 and normalise
+            pixel_values = data["pixel_values"].float() / 255.0  # (T, C, H, W)
+            if pixel_values.shape[0] == 3:
+                # assume (C, T, H, W)
+                pass
+            elif pixel_values.shape[1] == 3:
+                # assume (T, C, H, W), need to permute
+                pixel_values = pixel_values.permute(1, 0, 2, 3)
+            else:
+                raise ValueError(f"Unrecognised shape {pixel_values.shape} in {filePath}")
 
             expected_frames = 16
-            num_frames = pixel_values.shape[0]
+            c, t, h, w = pixel_values.shape
+            if t < expected_frames:
+                pad = torch.zeros((c, expected_frames - t, h, w), dtype=pixel_values.dtype)
+                pixel_values = torch.cat([pixel_values, pad], dim=1)
+            elif t > expected_frames:
+                pixel_values = pixel_values[:, :expected_frames]
 
-            if num_frames < expected_frames:
-                pad = torch.zeros(
-                    (expected_frames - num_frames, *pixel_values.shape[1:]),
-                    dtype=pixel_values.dtype,
-                )
-                pixel_values = torch.cat([pixel_values, pad], dim=0)
-            elif num_frames > expected_frames:
-                pixel_values = pixel_values[:expected_frames]
+            if pixel_values.shape[0] != 3:
+                raise ValueError(f"Expected 3 channels but got {pixel_values.shape[0]} in {filePath}")
             return {
                 "pixel_values": pixel_values,
                 "labels": 0 if os.path.basename(filePath).startswith("NonViolence_") else 1,
@@ -96,15 +102,15 @@ if not TRAINED:
     model = model.to(device)
     model.classifier = torch.nn.Linear(model.config.hidden_size, 2)
     
-    trainDs = ViolenceDataset("RLVS/train_tensors")
-    testDs = ViolenceDataset("test_tensors")
-    valDs = ViolenceDataset("RLVS/val_tensors")
+    trainDs = ViolenceDataset("train_tensors")
+    testDs = ViolenceDataset("RWF-2000/test_tensors")
+    valDs = ViolenceDataset("val_tensors")
     
 else:
     model = TimesformerForVideoClassification.from_pretrained("timesformerTrained", config=config)
     testDs = ViolenceDataset("test_tensors")
 
-def metrics(eval_pred, threshold=0.3):      #threshold determined by thresholdSweep
+def metrics(eval_pred, threshold=0.5):      #threshold determined by thresholdSweep
     logits, labels = eval_pred
     probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
     preds = (probs[:, 1] >= threshold).astype(int)
@@ -218,9 +224,23 @@ def thresholdSweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
 
 
 def dataBatcher(batch):
-    pixel_values = torch.stack([item["pixel_values"] for item in batch])
+    pixel_values = torch.stack([item["pixel_values"].permute(1, 0, 2, 3) for item in batch])  # (B, T, C, H, W)
     labels = torch.tensor([item["labels"] for item in batch])
     return {"pixel_values": pixel_values, "labels": labels}
+
+def plotCalibrationCurve(probs, labels):
+    # create figure and axis first
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    # plot calibration curve using from_predictions
+    CalibrationDisplay.from_predictions(labels, probs, n_bins=10, strategy='uniform', ax=ax, name="Timesformer")
+
+    ax.set_title("Calibration Curve (Reliability Diagram)")
+    fig.tight_layout()
+
+    os.makedirs("evaluation_plots", exist_ok=True)
+    fig.savefig("evaluation_plots/calibration_curve.png")
+    plt.close(fig)
 
 if not TRAINED:
     # training args
@@ -231,14 +251,18 @@ if not TRAINED:
         logging_dir="./logs",
         save_strategy="epoch",
         load_best_model_at_end=True,
-        logging_steps=20,
+        logging_steps=500,
         fp16=torch.cuda.is_available(),
-        weight_decay=0.05,
+        weight_decay=0.3,
         max_grad_norm=1.0,
         output_dir="./timesformerOutput",
-        save_total_limit=2,
-        metric_for_best_model="accuracy",
+        save_total_limit=1,
+        metric_for_best_model="f1",
         greater_is_better=True,
+        label_smoothing_factor=0.2, #1753 had 0.3 1754 had 0.2
+        lr_scheduler_type="cosine",
+        warmup_steps=300,
+        learning_rate=1e-4
     )
 
     # trainer
@@ -274,10 +298,18 @@ elif not TRAINED:
     trainer.save_model("timesformerTrained")
 else:
     print("Using existing trained model...")
-    model = TimesformerForVideoClassification.from_pretrained(
-        "timesformerTrained", config=config
-    ).to(device)
+    model = TimesformerForVideoClassification.from_pretrained("timesformerTrained", config=config).to(device)
     trainer.model = model
+
+#count the number of violent and non-violent videos in the test set
+testViolenceCount = sum(1 for sample in testDs if sample["labels"] == 1)
+testNonViolenceCount = sum(1 for sample in testDs if sample["labels"] == 0)
+print(f"Test set - Violent: {testViolenceCount}, Non-Violent: {testNonViolenceCount}")
+
+if not TRAINED:
+    trainViolenceCount = sum(1 for sample in trainDs if sample["labels"] == 1)
+    trainNonViolenceCount = sum(1 for sample in trainDs if sample["labels"] == 0)
+    print(f"Train set - Violent: {trainViolenceCount}, Non-Violent: {trainNonViolenceCount}")
 
 # test the model
 startTime = time.time()
@@ -297,12 +329,21 @@ for key, name in [
 ]:
     value = testMetrics.get(f"test_{key}", "N/A")
     print(f"{name}: {value}", flush=True)
+    
+print(f"Prediction time: {endTime - startTime:.2f} seconds", flush=True)
+probs = torch.nn.functional.softmax(torch.tensor(predictionResults.predictions), dim=-1).numpy()[:, 1]
+labels = predictionResults.label_ids
+plotCalibrationCurve(probs, labels)
 
-plotMetrics(predictionResults)
+plt.hist(probs, bins=50, edgecolor='black')
+plt.title("Distribution of Violence Probabilities")
+plt.xlabel("P(Violence)")
+plt.ylabel("Count")
+plt.savefig("evaluation_plots/violence_probabilities_distribution.png")
 
 
 # testResults = trainer.evaluate(eval_dataset=testDs, metric_key_prefix="eval")
-
+  
 # print("=== TEST RESULTS ===")
 # for key, name in [
 #     ("accuracy", "Accuracy"),
@@ -319,9 +360,9 @@ plotMetrics(predictionResults)
 
 # plotMetrics(testResults)
 
-#best_threshold = thresholdSweep(trainer, testDs)
-#print(f"Best threshold for F1: {best_threshold['threshold']}")
-#print(f"Best F1: {best_threshold['f1']}")
-#print(f"Best Precision: {best_threshold['precision']}")
-#print(f"Best Recall: {best_threshold['recall']}")
-#print(f"Best Accuracy: {best_threshold['accuracy']}")
+best_threshold = thresholdSweep(trainer, testDs)
+print(f"Best threshold for F1: {best_threshold['threshold']}")
+print(f"Best F1: {best_threshold['f1']}")
+print(f"Best Precision: {best_threshold['precision']}")
+print(f"Best Recall: {best_threshold['recall']}")
+print(f"Best Accuracy: {best_threshold['accuracy']}")

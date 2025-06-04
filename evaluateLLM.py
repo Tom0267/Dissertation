@@ -14,9 +14,9 @@ df = pd.read_csv(resultsCsv)
 #true label from ID
 def inferTrueLabel(videoId):
     videoId = videoId.lower()
-    if videoId.startswith("nonviolence_nv"):
+    if videoId.startswith("nonviolence"):
         return "non-violent"
-    elif videoId.startswith("violence_v"):
+    elif videoId.startswith("violence"):
         return "violent"
     return "unknown"
 
