@@ -16,6 +16,7 @@ from transformers import (
     Trainer,
     TimesformerConfig,
     EarlyStoppingCallback,
+    Trainer
 )
 from sklearn.metrics import (
     accuracy_score,
@@ -90,11 +91,11 @@ processor = AutoImageProcessor.from_pretrained(modelName, use_fast=False)
 config = TimesformerConfig.from_pretrained(modelName)
 config.num_labels = 2
 # print(config)
-config.hidden_dropout_prob = 0.3
-config.attention_probs_dropout_prob = 0.3
+config.hidden_dropout_prob = 0.25
+config.attention_probs_dropout_prob = 0.25
 
 class FocalLoss(torch.nn.Module):
-    def __init__(self, gamma=1.0, alpha=0.25, reduction="mean"):
+    def __init__(self, gamma=1.0, alpha=0.05, reduction="mean"):
         super().__init__()
         self.gamma = gamma
         self.alpha = alpha
@@ -137,7 +138,7 @@ else:
     model = TimesformerForVideoClassification.from_pretrained("timesformerTrained", config=config)
     testDs = ViolenceDataset("RWF-2000/test_tensors")
 
-def metrics(eval_pred, threshold=0.5):      #threshold determined by thresholdSweep
+def metrics(eval_pred, threshold=0.95):      #threshold determined by thresholdSweep
     logits, labels = eval_pred
     probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
     preds = (probs[:, 1] >= threshold).astype(int)
@@ -170,7 +171,7 @@ def metrics(eval_pred, threshold=0.5):      #threshold determined by thresholdSw
     }
     
 def focalLoss(outputs, labels, num_items_in_batch):
-    loss_fn = FocalLoss(gamma=1.0, alpha=0.25)
+    loss_fn = FocalLoss(gamma=1.0, alpha=0.05)
     return loss_fn(outputs.logits, labels)
 
 def plotMetrics(testResults, save_dir="evaluation_plots"):
@@ -222,7 +223,7 @@ def sweepFocalLoss(trainer_template, model, val_dataset, alpha_values, gamma_val
     return results
 
 
-def thresholdSweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
+def thresholdSweep(trainer, dataset, thresholds=np.arange(0, 1.0, 0.05)):
     outputs = trainer.predict(dataset)
     logits = outputs.predictions
     labels = outputs.label_ids
@@ -304,10 +305,10 @@ if not TRAINED:
         save_total_limit=1,
         metric_for_best_model="log_loss",
         greater_is_better=False,
-        label_smoothing_factor=0.2, #1755 had 0.2
+        label_smoothing_factor=0.05,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.1,
-        learning_rate=1e-4,
+        warmup_ratio=0.2,
+        learning_rate=5e-5,
         seed=42,
     )
 
@@ -318,7 +319,7 @@ if not TRAINED:
         train_dataset=trainDs,
         eval_dataset=valDs,
         compute_metrics=metrics,
-        compute_loss_func=focalLoss,
+        #compute_loss_func=focalLoss,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
         data_collator=dataBatcher,
     )
@@ -433,9 +434,7 @@ print(f"Best Log Loss: {best_threshold['log_loss']}")
 
 
 
-from transformers import Trainer
-
-def create_trainer_template(model, args, trainDs, valDs, metrics_fn, data_collator):
+def createTrainerTemplate(model, args, trainDs, valDs, metrics_fn, data_collator):
     return Trainer(
         model=model,
         args=args,
@@ -446,7 +445,7 @@ def create_trainer_template(model, args, trainDs, valDs, metrics_fn, data_collat
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
     )
     
-trainer_template = create_trainer_template(
+trainerTemplate = createTrainerTemplate(
     model=model,
     args=args,
     trainDs=trainDs,
@@ -455,11 +454,11 @@ trainer_template = create_trainer_template(
     data_collator=dataBatcher
 )
 
-alpha_values = [0.25, 0.5, 0.75]
+alpha_values = [0.05, 0.1, 0.25, 0.5, 0.75]
 gamma_values = [1, 2, 3]
 
 results = sweepFocalLoss(
-    trainer_template=trainer,  # must be created before this
+    trainer_template=trainerTemplate,  # must be created before this
     model=model,
     val_dataset=valDs,
     alpha_values=alpha_values,
