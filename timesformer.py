@@ -7,7 +7,7 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
-from sklearn.metrics import RocCurveDisplay
+from sklearn.metrics import RocCurveDisplay, log_loss
 from sklearn.calibration import CalibrationDisplay
 from transformers import (
     AutoImageProcessor,
@@ -90,16 +90,43 @@ processor = AutoImageProcessor.from_pretrained(modelName, use_fast=False)
 config = TimesformerConfig.from_pretrained(modelName)
 config.num_labels = 2
 # print(config)
-config.hidden_dropout_prob = 0.2
-config.attention_probs_dropout_prob = 0.2
+config.hidden_dropout_prob = 0.3
+config.attention_probs_dropout_prob = 0.3
+
+class FocalLoss(torch.nn.Module):
+    def __init__(self, gamma=1.0, alpha=0.25, reduction="mean"):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        self.reduction = reduction
+
+    def forward(self, logits, targets):
+        ce_loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none")
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
 
 if not TRAINED:
-    # load the model but ignore the mismatched head
+    #load the model but ignore the mismatched head
     model = TimesformerForVideoClassification.from_pretrained(
         modelName, config=config, ignore_mismatched_sizes=True
     )
     model.gradient_checkpointing_enable()
     model = model.to(device)
+    
+    for name, param in model.named_parameters():
+        if name.startswith("embeddings.") or "encoder.layer." in name:
+            if "encoder.layer." in name:
+                layer_num = int(name.split("encoder.layer.")[1].split(".")[0])
+                if layer_num >= 7:
+                    continue
+            param.requires_grad = False
+    
     model.classifier = torch.nn.Linear(model.config.hidden_size, 2)
     
     trainDs = ViolenceDataset("train_tensors")
@@ -108,7 +135,7 @@ if not TRAINED:
     
 else:
     model = TimesformerForVideoClassification.from_pretrained("timesformerTrained", config=config)
-    testDs = ViolenceDataset("test_tensors")
+    testDs = ViolenceDataset("RWF-2000/test_tensors")
 
 def metrics(eval_pred, threshold=0.5):      #threshold determined by thresholdSweep
     logits, labels = eval_pred
@@ -123,8 +150,10 @@ def metrics(eval_pred, threshold=0.5):      #threshold determined by thresholdSw
 
     try:
         roc_auc = roc_auc_score(labels, probs[:, 1])
+        ll = log_loss(labels, probs[:, 1])
     except ValueError:
         roc_auc = float("nan")
+        ll = float("nan")
 
     cm = confusion_matrix(labels, preds, labels=[0, 1])
     report = classification_report(labels, preds, output_dict=True)
@@ -137,32 +166,15 @@ def metrics(eval_pred, threshold=0.5):      #threshold determined by thresholdSw
         "roc_auc": roc_auc,
         "confusion_matrix": cm.tolist(),
         "classification_report": report,
+        "log_loss": ll
     }
-
+    
+def focalLoss(outputs, labels, num_items_in_batch):
+    loss_fn = FocalLoss(gamma=1.0, alpha=0.25)
+    return loss_fn(outputs.logits, labels)
 
 def plotMetrics(testResults, save_dir="evaluation_plots"):
     os.makedirs(save_dir, exist_ok=True)
-
-    # plot confusion matrix
-    try:
-        cm = np.array(testResults["eval_confusion_matrix"])
-    except (TypeError, KeyError):
-        cm = np.array(testResults.metrics["test_confusion_matrix"])
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        xticklabels=["NonViolence", "Violence"],
-        yticklabels=["NonViolence", "Violence"],
-    )
-    plt.title("Confusion Matrix")
-    plt.xlabel("Predicted Label")
-    plt.ylabel("True Label")
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "confusion_matrix.png"))
-    plt.close()
 
     # plot ROC curve using existing predictions
     try:
@@ -177,6 +189,37 @@ def plotMetrics(testResults, save_dir="evaluation_plots"):
         plt.close()
     except Exception as e:
         print(f"Could not plot ROC curve: {e}")
+        
+from copy import deepcopy
+
+def sweepFocalLoss(trainer_template, model, val_dataset, alpha_values, gamma_values):
+    results = []
+
+    for alpha in alpha_values:
+        for gamma in gamma_values:
+            print(f"\n--- Testing Focal Loss with alpha={alpha}, gamma={gamma} ---")
+
+            # define focal loss with current params
+            loss_fn = FocalLoss(alpha=alpha, gamma=gamma)
+
+            # wrap compute_loss to capture current loss_fn
+            def compute_loss(model, inputs, return_outputs=False):
+                labels = inputs["labels"]
+                outputs = model(**inputs)
+                loss = loss_fn(outputs.logits, labels)
+                return (loss, outputs) if return_outputs else loss
+
+            # clone trainer so we don't overwrite original
+            trainer = deepcopy(trainer_template)
+            trainer.compute_loss = compute_loss
+
+            # run validation only (no training)
+            result = trainer.evaluate(eval_dataset=val_dataset)
+            result["alpha"] = alpha
+            result["gamma"] = gamma
+            results.append(result)
+
+    return results
 
 
 def thresholdSweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
@@ -193,6 +236,7 @@ def thresholdSweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
         precision = precision_score(labels, preds)
         recall = recall_score(labels, preds)
         accuracy = accuracy_score(labels, preds)
+        ll = log_loss(labels, np.clip(probs, 1e-15, 1 - 1e-15))
 
         results.append(
             {
@@ -201,6 +245,7 @@ def thresholdSweep(trainer, dataset, thresholds=np.arange(0.1, 1.0, 0.05)):
                 "precision": precision,
                 "recall": recall,
                 "accuracy": accuracy,
+                "log_loss": ll
             }
         )
 
@@ -245,7 +290,7 @@ def plotCalibrationCurve(probs, labels):
 if not TRAINED:
     # training args
     args = TrainingArguments(
-        per_device_train_batch_size=1,
+        per_device_train_batch_size=4,
         eval_strategy="epoch",
         num_train_epochs=10,
         logging_dir="./logs",
@@ -253,16 +298,17 @@ if not TRAINED:
         load_best_model_at_end=True,
         logging_steps=500,
         fp16=torch.cuda.is_available(),
-        weight_decay=0.3,
+        weight_decay=0.1,
         max_grad_norm=1.0,
         output_dir="./timesformerOutput",
         save_total_limit=1,
-        metric_for_best_model="f1",
-        greater_is_better=True,
-        label_smoothing_factor=0.2, #1753 had 0.3 1754 had 0.2
+        metric_for_best_model="log_loss",
+        greater_is_better=False,
+        label_smoothing_factor=0.2, #1755 had 0.2
         lr_scheduler_type="cosine",
-        warmup_steps=300,
-        learning_rate=1e-4
+        warmup_ratio=0.1,
+        learning_rate=1e-4,
+        seed=42,
     )
 
     # trainer
@@ -272,7 +318,8 @@ if not TRAINED:
         train_dataset=trainDs,
         eval_dataset=valDs,
         compute_metrics=metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+        compute_loss_func=focalLoss,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
         data_collator=dataBatcher,
     )
 else:
@@ -326,9 +373,23 @@ for key, name in [
     ("roc_auc", "ROC-AUC"),
     ("confusion_matrix", "Confusion Matrix"),
     ("classification_report", "Classification Report"),
+    ("log_loss", "Log Loss"),
 ]:
     value = testMetrics.get(f"test_{key}", "N/A")
     print(f"{name}: {value}", flush=True)
+    
+#save CM
+cm = np.array(testMetrics["test_confusion_matrix"])
+plt.figure(figsize=(6, 5))
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=["NonViolence", "Violence"],
+            yticklabels=["NonViolence", "Violence"])
+plt.title("Confusion Matrix")
+plt.xlabel("Predicted Label")
+plt.ylabel("True Label")
+plt.tight_layout()
+plt.savefig("evaluation_plots/confusion_matrix.png")
+plt.close()
     
 print(f"Prediction time: {endTime - startTime:.2f} seconds", flush=True)
 probs = torch.nn.functional.softmax(torch.tensor(predictionResults.predictions), dim=-1).numpy()[:, 1]
@@ -366,3 +427,46 @@ print(f"Best F1: {best_threshold['f1']}")
 print(f"Best Precision: {best_threshold['precision']}")
 print(f"Best Recall: {best_threshold['recall']}")
 print(f"Best Accuracy: {best_threshold['accuracy']}")
+print(f"Best Log Loss: {best_threshold['log_loss']}")
+
+
+
+
+
+from transformers import Trainer
+
+def create_trainer_template(model, args, trainDs, valDs, metrics_fn, data_collator):
+    return Trainer(
+        model=model,
+        args=args,
+        train_dataset=trainDs,
+        eval_dataset=valDs,
+        compute_metrics=metrics_fn,
+        data_collator=data_collator,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
+    )
+    
+trainer_template = create_trainer_template(
+    model=model,
+    args=args,
+    trainDs=trainDs,
+    valDs=valDs,
+    metrics_fn=metrics,
+    data_collator=dataBatcher
+)
+
+alpha_values = [0.25, 0.5, 0.75]
+gamma_values = [1, 2, 3]
+
+results = sweepFocalLoss(
+    trainer_template=trainer,  # must be created before this
+    model=model,
+    val_dataset=valDs,
+    alpha_values=alpha_values,
+    gamma_values=gamma_values
+)
+
+# sort by best F1
+best = sorted(results, key=lambda x: x['eval_f1'], reverse=True)[0]
+print("\nBest config:")
+print(best)
