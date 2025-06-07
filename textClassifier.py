@@ -4,7 +4,7 @@ import torch
 #create zero-shot classification
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=0 if torch.cuda.is_available() else -1)
 
-def classify(text, candidateLabels=["violent", "non-violent"], hypothesisTemplate="This text describes a real-life {} situation."):
+def classify(text, candidateLabels=["violent", "non-violent"], hypothesisTemplate="This text describes a real-life {} situation."):     #classify text into violent or non-violent
     result = classifier(
         sequences=text,
         candidate_labels=candidateLabels,
@@ -20,7 +20,7 @@ def classify(text, candidateLabels=["violent", "non-violent"], hypothesisTemplat
     
     label = result["labels"][0]
     score = result["scores"][0]
-    allScores = dict(zip(result["labels"], result["scores"]))
+    allScores = dict(zip(result["labels"], result["scores"]))       #create a dictionary of all scores for each label
 
     return {
         "label": label,

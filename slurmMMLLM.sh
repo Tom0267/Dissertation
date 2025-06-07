@@ -16,7 +16,7 @@ cd /mnt/nfs/homes/ditchfit/Dissertation/
 echo "Running on $(hostname)"
 
 echo "Starting testing"
-#python Llama-3.2-Vision.py
+python Llama-3.2-Vision.py
 
 python evaluateLLM.py
 

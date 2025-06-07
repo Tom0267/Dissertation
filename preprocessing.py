@@ -16,7 +16,6 @@ from torchvision.transforms import Compose, Resize, ColorJitter, ToTensor, Rando
 
 #config
 datasetRoot = os.path.join(kagglehub.dataset_download("mohamedmustafa/real-life-violence-situations-dataset"),"Real Life Violence Dataset")
-#datasetRoot = "/mnt/nfs/homes/ditchfit/.cache/kagglehub/datasets/seldaertrk/hockey-fight/versions/1/data"
 #datasetRoot = "RWF-2000/RWF-2000-Dataset/train"
 frameOutputDir = "extractedFrames"
 featureOutputPath = "motion_features.json"
@@ -32,8 +31,8 @@ resizeShape = (224, 224)
 valRatio = 0.1
 testRatio = 0.2
 
-#preprocessing for each frame
-transform = Compose([
+#preprocessing for each frame 
+transform = Compose([   
     Resize((224, 224)),
     RandomApply([ColorJitter(brightness=0.2)], p=0.3),
     RandomApply([ColorJitter(contrast=0.2)], p=0.3),
@@ -45,10 +44,10 @@ transform = Compose([
 ])
 
 class VideoTransform:
-    def __init__(self, resize=(224, 224)):
+    def __init__(self, resize=(224, 224)):      #resize shape for each frame
         self.resize = resize
 
-    def init_random_params(self, image):
+    def init_random_params(self, image):            #initialize random parameters for augmentation
         self.do_brightness = random.random() < 0.3
         self.do_contrast = random.random() < 0.3
         self.do_saturation = random.random() < 0.3
@@ -64,11 +63,11 @@ class VideoTransform:
         self.rotation_angle = random.uniform(-10, 10) if self.do_rotate else 0
 
         if self.do_crop:
-            self.crop_params = RandomResizedCrop.get_params(image, scale=(0.8, 1.0), ratio=(1.0, 1.0))
+            self.crop_params = RandomResizedCrop.get_params(image, scale=(0.8, 1.0), ratio=(1.0, 1.0))  #get random crop parameters
         else:
             self.crop_params = None
 
-    def __call__(self, image):
+    def __call__(self, image):                      #apply transformations to the image 
         img = F.resize(image, self.resize)
         img = F.adjust_brightness(img, self.brightness_factor)
         img = F.adjust_contrast(img, self.contrast_factor)
@@ -83,31 +82,31 @@ class VideoTransform:
             img = F.rotate(img, self.rotation_angle)
         return img
 
-def extractUniformFrames(videoPath, maxFrames=numFrames, interval=frameInterval):
-    cap = cv2.VideoCapture(videoPath)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+def extractUniformFrames(videoPath, maxFrames=numFrames, interval=frameInterval):       #extract frames uniformly from the video
+    cap = cv2.VideoCapture(videoPath)                   #open video file
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))      #get total number of frames
     frames = []
 
-    for i in range(maxFrames):
+    for i in range(maxFrames):      #extract frames at regular intervals
         idx = i * interval
-        if idx >= total:
+        if idx >= total:     #if index exceeds total frames, break
             break
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if not ret:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)   #set the frame position
+        ret, frame = cap.read()     #read the frame
+        if not ret:                 #if frame not found, break
             break
-        frames.append(frame)  # keep as BGR
+        frames.append(frame)  #keep as BGR
 
-    cap.release()
+    cap.release()       #release resource
     return frames
 
-def saveFramesAsJpg(frames, baseName):
+def saveFramesAsJpg(frames, baseName):      #save extracted frames as JPEG images
     os.makedirs(frameOutputDir, exist_ok=True)
     for i, frame in enumerate(frames):
         outPath = os.path.join(frameOutputDir, f"{baseName}_{i}.jpg")
         cv2.imwrite(outPath, frame)
 
-def computeMotionFeatures(frames):
+def computeMotionFeatures(frames):      #compute motion features from the extracted frames
     if len(frames) < 2:
         return {k: 0.0 for k in [
             "mean", "std", "max", "min", "range",
@@ -116,20 +115,20 @@ def computeMotionFeatures(frames):
 
     motionMeans = []
     motionCounts = []
-    prevGray = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY)
+    prevGray = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY)  #convert first frame to grayscale
 
-    for frame in frames[1:]:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(
+    for frame in frames[1:]:        #iterate over remaining frames
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  #convert to grayscale
+        flow = cv2.calcOpticalFlowFarneback(    #calculate optical flow
             prevGray, gray, None,
             0.5, 3, 15, 3, 5, 1.2, 0
         )
-        mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-        motionMeans.append(np.mean(mag))
-        motionCounts.append(np.sum(mag > 1.0))
+        mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])    #convert flow to magnitude
+        motionMeans.append(np.mean(mag))                        #append mean magnitude to motionMeans
+        motionCounts.append(np.sum(mag > 1.0))                  #count significant motion pixels
         prevGray = gray
 
-    motionMeans = np.array(motionMeans)
+    motionMeans = np.array(motionMeans)                     #convert to numpy array
 
     return {
         "mean": float(np.mean(motionMeans)),
@@ -143,11 +142,11 @@ def computeMotionFeatures(frames):
         "motionCount": int(np.mean(motionCounts))
     }
 
-def saveFramesAsTensor(frames, outPath):
+def saveFramesAsTensor(frames, outPath):    #save frames as a tensor
     tensor = torch.tensor(np.stack(frames), dtype=torch.uint8).permute(0, 3, 1, 2)
     torch.save({"pixel_values": tensor}, outPath)
     
-def saveSplit(paths, label_map, split_name, split_map):
+def saveSplit(paths, label_map, split_name, split_map):     #save split information 
     for path in paths:
         label = label_map[path]
         base_name = os.path.splitext(os.path.basename(path))[0]
@@ -155,16 +154,16 @@ def saveSplit(paths, label_map, split_name, split_map):
         split_map[tagged_name] = split_name
 
 def preprocessDataset():
-    for d in tensorDirs.values():
+    for d in tensorDirs.values():       #create directories for each split
         os.makedirs(d, exist_ok=True)
-    os.makedirs(frameOutputDir, exist_ok=True)
+    os.makedirs(frameOutputDir, exist_ok=True)  #create directory for extracted frames
 
     videoPaths, labels = [], []
 
     # use folder names for label assignment
-    for labelFolder in os.listdir(datasetRoot):
+    for labelFolder in os.listdir(datasetRoot):             #iterate over folders
         labelPath = os.path.join(datasetRoot, labelFolder)
-        if not os.path.isdir(labelPath):
+        if not os.path.isdir(labelPath):                        #skip if not a directory
             continue
         labelLower = labelFolder.lower()
         if labelLower in ["violence", "fights", "fight"]:
@@ -173,8 +172,8 @@ def preprocessDataset():
             label = "NonViolence"
         else:
             continue
-        for filename in os.listdir(labelPath):
-            if filename.endswith((".avi", ".mp4")):
+        for filename in os.listdir(labelPath):                  #iterate over files in label folder
+            if filename.endswith((".avi", ".mp4")):             #check for video files
                 fullPath = os.path.join(labelPath, filename)
                 videoPaths.append(fullPath)
                 labels.append(label)
@@ -183,21 +182,21 @@ def preprocessDataset():
     print(f"Label distribution: {dict((label, labels.count(label)) for label in set(labels))}")
     print(f"Sample paths: {videoPaths[:3]}")
 
-    if len(videoPaths) == 0: #or 
+    if len(videoPaths) == 0:
         raise RuntimeError("No videos were found.")
     if len(set(labels)) < 2:
         raise RuntimeError("only one class present.")
 
-    labelMap = {path: label for path, label in zip(videoPaths, labels)}
+    labelMap = {path: label for path, label in zip(videoPaths, labels)}     #create map of video paths to labels
     
     
-    if testRatio != 1:
+    if testRatio != 1:      #if training
         trainValPaths, testPaths, trainValLabels, testLabels = train_test_split(
-            videoPaths, labels, test_size=testRatio, stratify=labels, random_state=42
+            videoPaths, labels, test_size=testRatio, stratify=labels, random_state=42       #split into train+val and test sets
         )
 
         trainPaths, valPaths, _, _ = train_test_split(
-            trainValPaths, trainValLabels, test_size=valRatio / (1.0 - testRatio),
+            trainValPaths, trainValLabels, test_size=valRatio / (1.0 - testRatio),      #split into train and val sets
             stratify=trainValLabels, random_state=42
         )
 
@@ -205,9 +204,10 @@ def preprocessDataset():
         saveSplit(trainPaths, labelMap, "train", splitMap)
         saveSplit(valPaths, labelMap, "val", splitMap)
         saveSplit(testPaths, labelMap, "test", splitMap)
-    else:
+        
+    else:               #if testing
         splitMap = {}
-        for path in videoPaths:
+        for path in videoPaths:     #assign all videos to test split
             label = labelMap[path]
             baseName = os.path.splitext(os.path.basename(path))[0]
             taggedName = f"{label}_{baseName}"
@@ -216,7 +216,7 @@ def preprocessDataset():
     allFeatures = {}
     totalVideos = 0
 
-    for path in tqdm(videoPaths, desc="Processing videos"):
+    for path in tqdm(videoPaths, desc="Processing videos"):     #iterate over all video paths
         label = labelMap[path]
         baseName = os.path.splitext(os.path.basename(path))[0]
         taggedName = f"{label}_{baseName}"
@@ -227,16 +227,16 @@ def preprocessDataset():
         if len(frames) < 8:
             continue
         
-        vt = VideoTransform(resize=resizeShape)
+        vt = VideoTransform(resize=resizeShape) #initialize video transform with resize shape
         
-        if (split == "train" or split == "val") and random.random() < 0.5:
-            vt.init_random_params(Image.fromarray(cv2.cvtColor(frames[0], cv2.COLOR_BGR2RGB)))
+        if (split == "train" or split == "val") and random.random() < 0.5:                      #apply augmentations for train and val splits
+            vt.init_random_params(Image.fromarray(cv2.cvtColor(frames[0], cv2.COLOR_BGR2RGB)))  #initialize random parameters for augmentations
             frames = [
-                np.array(vt(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))))
+                np.array(vt(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))))   #apply transformations to each frame in the video
                 for frame in frames
             ]
         else:
-            # always apply basic resize even if augmentations are skipped
+            #apply basic resize even if augmentations are skipped
             frames = [
                 np.array(F.resize(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), resizeShape))
                 for frame in frames
@@ -247,9 +247,9 @@ def preprocessDataset():
         totalVideos += 1
 
     with open(featureOutputPath, "w") as f:
-        json.dump(allFeatures, f, indent=2)
+        json.dump(allFeatures, f, indent=2)     #save motion features to JSON file
     with open(splitOutputPath, "w") as f:
-        json.dump(splitMap, f, indent=2)
+        json.dump(splitMap, f, indent=2)    #save split map to JSON file
 
     print(f"\nPreprocessing complete. {totalVideos} videos processed.")
     for split, folder in tensorDirs.items():
