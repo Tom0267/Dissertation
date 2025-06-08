@@ -10,9 +10,11 @@ import csv
 import os
 
 #config
-modelId = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-frameDirectory = "RLVS/extractedFrames"
-
+MODELID = "meta-llama/Llama-3.2-11B-Vision-Instruct"
+FRAMEDIR = "RWF-2000/extractedFrames"
+SPLITPATH = "RWF-2000/split.json"
+RESULTSPATH = "RWF-2000/results.csv"
+MAXTOKENS = 300
 prompt = (
     "This image is part of a public dataset of street and public scenes used for academic research. "
     "Start your response with a yes or no if violence is depicted in this image. "
@@ -20,16 +22,14 @@ prompt = (
     "If there isn't any violence, describe the scene as peaceful or non-violent. "
     "Use simple language and avoid complex terms where possible."
 )
-maxTokens = 300
-resultsPath = "RLVS/results.csv"
 
 #load model and processor
-model = MllamaForConditionalGeneration.from_pretrained(modelId, torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32, device_map="auto")
+model = MllamaForConditionalGeneration.from_pretrained(MODELID, torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32, device_map="auto")
 model.tie_weights()                                                         
 model.eval()
-processor = AutoProcessor.from_pretrained(modelId)                          #load processor for model
-model.generation_config = GenerationConfig.from_pretrained(modelId)         #load generation config from model
-model.generation_config.max_new_tokens = maxTokens                          #set max tokens for generation
+processor = AutoProcessor.from_pretrained(MODELID)                          #load processor for model
+model.generation_config = GenerationConfig.from_pretrained(MODELID)         #load generation config from model
+model.generation_config.max_new_tokens = MAXTOKENS                          #set max tokens for generation
 model.generation_config.pad_token_id = processor.tokenizer.pad_token_id     #set pad token for model
 model.generation_config.eos_token_id = processor.tokenizer.eos_token_id     #set generation config for model
 
@@ -149,14 +149,14 @@ def checkBoilerplate(text):
     return None
 
 if __name__ == "__main__":
-    with open("RLVS/split.json") as f:  #load the split data to get test videos
+    with open(SPLITPATH) as f:  #load the split data to get test videos
         split_data = json.load(f)
         
     testVideos = {vid for vid, split in split_data.items() if split == "test"}  #get test videos from split data
-    allFrames = groupFramesByVideo(frameDirectory)                                  #group frames by video ID
+    allFrames = groupFramesByVideo(FRAMEDIR)                                  #group frames by video ID
     groupedFrames = {vid: frames for vid, frames in allFrames.items() if vid in testVideos} #filter frames to only include test videos
     
-    with open(resultsPath, "a", newline='', encoding="utf-8", buffering=1) as csvfile, open("frameOutputs.csv", "w", newline='', encoding="utf-8", buffering=1) as framefile:   
+    with open(RESULTSPATH, "a", newline='', encoding="utf-8", buffering=1) as csvfile, open("frameOutputs.csv", "w", newline='', encoding="utf-8", buffering=1) as framefile:   
         videoWriter = csv.writer(csvfile)
         frameWriter = csv.writer(framefile)
 

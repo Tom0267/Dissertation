@@ -43,7 +43,7 @@ def getLabel(key: str) -> int | None:       #map video IDs to labels
         return 1
     return None
 
-def extractFeatures(featuresMap, splitMap=None, splitType=None):
+def extractFeatures(featuresMap, splitMap, splitType):
     X, y = [], []
     for key, features in featuresMap.items():                           #iterate over all features
         if splitMap and splitType and splitMap.get(key) != splitType:   #filter by split type if provided
@@ -60,9 +60,9 @@ def extractFeatures(featuresMap, splitMap=None, splitType=None):
 featureNames = list(next(iter(featuresByPathTrain.values())).keys())
 
 #build training and test sets
-XTrain, yTrain = extractFeatures(featuresByPathTrain)
-XTest, yTest = extractFeatures(featuresByPathTest)
-    
+XTrain, yTrain = extractFeatures(featuresByPathTrain, splitMap, "train")
+XTest, yTest = extractFeatures(featuresByPathTest, splitMap, "test")
+
 #sanity check
 print(testFeaturePath)
 if ((not XTest or not XTrain) and testFeaturePath.startswith("RLVS")):

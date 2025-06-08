@@ -3,10 +3,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 #paths
-resultsCsv = "RLVS/results.csv"
-changesTxt = "RLVS/decision_changes.txt"
-mistakesTxt = "RLVS/secondary_mistakes.txt"
-plotPath = "RLVS/confusion_matrix.png"
+resultsCsv = "RWF-2000/results.csv"
+changesTxt = "RWF-2000/decision_changes.txt"
+mistakesTxt = "RWF-2000/secondary_mistakes.txt"
+plotPath = "RWF-2000/confusion_matrix.png"
 
 #load data
 df = pd.read_csv(resultsCsv)
