@@ -31,18 +31,6 @@ resizeShape = (224, 224)
 valRatio = 0.1
 testRatio = 0.2
 
-#preprocessing for each frame 
-transform = Compose([   
-    Resize((224, 224)),
-    RandomApply([ColorJitter(brightness=0.2)], p=0.3),
-    RandomApply([ColorJitter(contrast=0.2)], p=0.3),
-    RandomApply([ColorJitter(saturation=0.2)], p=0.3),
-    RandomApply([ColorJitter(hue=0.1)], p=0.2),
-    RandomHorizontalFlip(p=0.5),
-    RandomApply([RandomResizedCrop(size=(224, 224), scale=(0.8, 1.0))], p=0.2),
-    RandomApply([RandomRotation(degrees=10)], p=0.2),
-])
-
 class VideoTransform:
     def __init__(self, resize=(224, 224)):      #resize shape for each frame
         self.resize = resize

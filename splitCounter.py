@@ -10,7 +10,7 @@ def countSamples(file_path):
     return violent_count, non_violent_count
 
 if __name__ == "__main__":
-    file_path = 'RLVS/motion_features.json'
+    file_path = 'RWF-2000/motion_features.json'
     violent_count, non_violent_count = countSamples(file_path)
     print(f"Violent samples: {violent_count}")
     print(f"Non-violent samples: {non_violent_count}")

@@ -7,16 +7,15 @@ import seaborn as sns
 from copy import deepcopy
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
-from sklearn.metrics import RocCurveDisplay, log_loss
 from sklearn.calibration import CalibrationDisplay
+from sklearn.metrics import RocCurveDisplay, log_loss
 from transformers import (
     AutoImageProcessor,
     TimesformerForVideoClassification,
     TrainingArguments,
     Trainer,
     TimesformerConfig,
-    EarlyStoppingCallback,
-    Trainer
+    EarlyStoppingCallback
 )
 from sklearn.metrics import (
     accuracy_score,
@@ -29,45 +28,58 @@ from sklearn.metrics import (
 )
 
 class ViolenceDataset(Dataset):
-    def __init__(self, rootDir):        #rootDir should contain .pt files with pixel_values
-        self.samples = sorted(
-            [os.path.join(rootDir, f) for f in os.listdir(rootDir) if f.endswith(".pt")]
-        )
+    def __init__(self, rootDir, valid_ids_file=None):  # now optional
+        if valid_ids_file and os.path.exists(valid_ids_file):
+            with open(valid_ids_file, "r") as f:
+                allowed_ids = set(line.strip() for line in f if line.strip())
+        else:
+            allowed_ids = None  # no filtering
 
-    def __len__(self):      #return the number of samples in the dataset
+        all_samples = [
+            os.path.join(rootDir, f) for f in os.listdir(rootDir) if f.endswith(".pt")
+        ]
+
+        if allowed_ids:
+            self.samples = sorted([
+                f for f in all_samples if os.path.splitext(os.path.basename(f))[0] in allowed_ids
+            ])
+        else:
+            self.samples = sorted(all_samples)
+
+        print(f"[{rootDir}] Loaded {len(self.samples)} samples"
+              f"{' (filtered)' if allowed_ids else ''}")
+
+    def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx):         #load a sample by index
+    def __getitem__(self, idx):
         filePath = self.samples[idx]
         try:
             data = torch.load(filePath, weights_only=True)
-            pixelValues = data["pixel_values"].float() / 255.0  #normalize to [0, 1]
+            pixelValues = data["pixel_values"].float() / 255.0
+
             if pixelValues.shape[0] == 3:
-                #assume (C, T, H, W)
                 pass
             elif pixelValues.shape[1] == 3:
-                #assume (T, C, H, W), need to permute to match input shape
                 pixelValues = pixelValues.permute(1, 0, 2, 3)
             else:
                 raise ValueError(f"Unrecognised shape {pixelValues.shape} in {filePath}")
 
-            expected_frames = 16            #timesformer expects 16 frames
-            c, t, h, w = pixelValues.shape  
-            if t < expected_frames:                             #if less than 16 frames, pad with zeros
+            expected_frames = 16
+            c, t, h, w = pixelValues.shape
+            if t < expected_frames:
                 pad = torch.zeros((c, expected_frames - t, h, w), dtype=pixelValues.dtype)
                 pixelValues = torch.cat([pixelValues, pad], dim=1)
-            elif t > expected_frames:                           #if more than 16 frames, truncate to 16
+            elif t > expected_frames:
                 pixelValues = pixelValues[:, :expected_frames]
 
-            if pixelValues.shape[0] != 3:       #check if pixelValues has 3 channels (C, T, H, W)
+            if pixelValues.shape[0] != 3:
                 raise ValueError(f"Expected 3 channels but got {pixelValues.shape[0]} in {filePath}")
-            return {
-                "pixel_values": pixelValues,
-                "labels": 0 if os.path.basename(filePath).startswith("NonViolence_") else 1,
-            }
+
+            label = 0 if os.path.basename(filePath).startswith("NonViolence_") else 1
+            return {"pixel_values": pixelValues, "labels": label}
         except Exception as e:
             raise RuntimeError(f"Failed to load {filePath}: {e}")
-
 
 #slurm
 print("=== SLURM ENVIRONMENT INFO ===")
@@ -82,34 +94,17 @@ modelName = "facebook/timesformer-base-finetuned-k400"
 device = "cuda" if torch.cuda.is_available() else "cpu" 
 labelMap = {"NonViolence": 0, "Violence": 1}
 TRAINED = os.path.exists("timesformerTrained/model.safetensors")        #check if trained model exists
+THRESHOLD = 0.2
 
 #model + processor
 processor = AutoImageProcessor.from_pretrained(modelName, use_fast=False)
 
 #load config and force num_labels=2
 config = TimesformerConfig.from_pretrained(modelName)
-config.num_labels = 2
+config.num_labels = 2         
 #print(config)
-config.hidden_dropout_prob = 0.25
-config.attention_probs_dropout_prob = 0.25
-
-class FocalLoss(torch.nn.Module):
-    def __init__(self, gamma=1.0, alpha=0.05, reduction="mean"):        #gamma and alpha are hyperparameters for focal loss 
-        super().__init__()  
-        self.gamma = gamma
-        self.alpha = alpha
-        self.reduction = reduction
-
-    def forward(self, logits, targets):     #logits are the model outputs, targets are the true labels
-        ce_loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none")
-        pt = torch.exp(-ce_loss)                                    #probability of the true class
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss  #focal loss formula
-
-        if self.reduction == "mean":        #reduce loss to mean
-            return focal_loss.mean()
-        elif self.reduction == "sum":       #reduce loss to sum
-            return focal_loss.sum()
-        return focal_loss
+config.hidden_dropout_prob = 0.3
+config.attention_probs_dropout_prob = 0.3
 
 if not TRAINED:
     #load the model but ignore the mismatched head
@@ -119,28 +114,23 @@ if not TRAINED:
     model.gradient_checkpointing_enable()   #enable gradient checkpointing for memory efficiency
     model = model.to(device)
     
-    for name, param in model.named_parameters():                        #freeze some layers of the model
-        if name.startswith("embeddings.") or "encoder.layer." in name:
-            if "encoder.layer." in name:
-                layer_num = int(name.split("encoder.layer.")[1].split(".")[0])  #get layer number from name
-                if layer_num >= 7:  #freeze only the first 7 layers
-                    continue
-            param.requires_grad = False
-    
     model.classifier = torch.nn.Linear(model.config.hidden_size, 2)     #set classifier to 2 classes (violence, non-violence)
     
     trainDs = ViolenceDataset("RLVS/train_tensors")
-    testDs = ViolenceDataset("RLVS/test_tensors")
+    #testDs = ViolenceDataset("RLVS/test_tensors")
+    testDs = ViolenceDataset("RWF-2000/test_tensors", valid_ids_file="tested_video_ids.txt")  #filtered to match test set from LLM
     valDs = ViolenceDataset("RLVS/val_tensors")
     
 else:
     model = TimesformerForVideoClassification.from_pretrained("timesformerTrained", config=config)
-    testDs = ViolenceDataset("RWF-2000/test_tensors")
+    #testDs = ViolenceDataset("RWF-2000/test_tensors", valid_ids_file="tested_video_ids.txt")  #filtered to match test set from LLM
+    testDs = ViolenceDataset("RLVS/test_tensors")
 
-def metrics(eval_pred, threshold=0.95):      #threshold determined by thresholdSweep
+def metrics(eval_pred, threshold=THRESHOLD):      #threshold determined by thresholdSweep
     logits, labels = eval_pred
     probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()   #convert logits to probabilities
-    preds = (probs[:, 1] >= threshold).astype(int)  #convert probabilities to binary predictions based on threshold
+    #preds = (probs[:, 1] >= threshold).astype(int)  #convert probabilities to binary predictions based on threshold
+    preds = probs.argmax(axis=1)
     labels = np.array(labels)
 
     precision = precision_score(labels, preds)
@@ -168,10 +158,29 @@ def metrics(eval_pred, threshold=0.95):      #threshold determined by thresholdS
         "classification_report": report,
         "log_loss": ll
     }
+
+def weightedLoss(outputs, labels, num_items_in_batch=None):
+    # class weights: [non-violence, violence]
+    weights = torch.tensor([2.5, 1], dtype=torch.float32).to(outputs.logits.device)
+    return torch.nn.functional.cross_entropy(outputs.logits, labels, weight=weights)
+
+def gridSearchClassWeights(trainerTemplate, val_dataset, weight_grid):
+    results = []
+
+    for w0, w1 in weight_grid:
+        print(f"\nTesting weights: NonViolence={w0}, Violence={w1}")
+        
+        trainer = deepcopy(trainerTemplate)
+        trainer.compute_loss = weightedLoss([w0, w1])  # <- uses custom weighted loss
+        
+        eval_results = trainer.evaluate(eval_dataset=val_dataset)
+        eval_results['weights'] = (w0, w1)
+        results.append(eval_results)
     
-def focalLoss(outputs, labels, num_items_in_batch): #compute focal loss for the model outputs and true labels
-    loss_fn = FocalLoss(gamma=1.0, alpha=0.05)
-    return loss_fn(outputs.logits, labels)
+    # sort by best F1
+    results.sort(key=lambda r: r['eval_f1'], reverse=True)
+    print("\nBest weight config:", results[0]['weights'])
+    return results
 
 def plotMetrics(testResults, save_dir="evaluation_plots"):  
     os.makedirs(save_dir, exist_ok=True)
@@ -189,82 +198,6 @@ def plotMetrics(testResults, save_dir="evaluation_plots"):
         plt.close()
     except Exception as e:
         print(f"Could not plot ROC curve: {e}")
-        
-def sweepFocalLoss(trainer_template, model, val_dataset, alpha_values, gamma_values):
-    results = []
-
-    for alpha in alpha_values:
-        for gamma in gamma_values:
-            print(f"\n--- Testing Focal Loss with alpha={alpha}, gamma={gamma} ---")
-
-            #define focal loss with current params
-            loss_fn = FocalLoss(alpha=alpha, gamma=gamma)
-
-            #wrap compute_loss to capture current loss_fn
-            def compute_loss(model, inputs, return_outputs=False):
-                labels = inputs["labels"]
-                outputs = model(**inputs)
-                loss = loss_fn(outputs.logits, labels)
-                return (loss, outputs) if return_outputs else loss
-
-            #clone trainer so dont overwrite original
-            trainer = deepcopy(trainer_template)
-            trainer.compute_loss = compute_loss
-
-            #run validation
-            result = trainer.evaluate(eval_dataset=val_dataset)
-            result["alpha"] = alpha
-            result["gamma"] = gamma
-            results.append(result)
-
-    return results
-
-
-def thresholdSweep(trainer, dataset, thresholds=np.arange(0, 1.0, 0.05)):       #sweep thresholds to find best one for F1 score
-    outputs = trainer.predict(dataset)
-    logits = outputs.predictions
-    labels = outputs.label_ids
-    probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()[:, 1]     #get probabilities for the positive class (violence)    
-
-    results = []
-
-    for t in thresholds:
-        preds = (probs >= t).astype(int)
-        f1 = f1_score(labels, preds)
-        precision = precision_score(labels, preds)
-        recall = recall_score(labels, preds)
-        accuracy = accuracy_score(labels, preds)
-        ll = log_loss(labels, np.clip(probs, 1e-15, 1 - 1e-15))
-
-        results.append(
-            {
-                "threshold": t,
-                "f1": f1,
-                "precision": precision,
-                "recall": recall,
-                "accuracy": accuracy,
-                "log_loss": ll
-            }
-        )
-
-    #plot
-    plt.figure(figsize=(8, 5))
-    for metric in ["f1", "precision", "recall", "accuracy"]:
-        plt.plot(thresholds, [r[metric] for r in results], label=metric)
-    plt.xlabel("Threshold")
-    plt.ylabel("Score")
-    plt.title("Threshold Tuning")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("evaluation_plots/threshold_tuning.png")
-    plt.close()
-
-    #return best threshold based on highest F1
-    best = max(results, key=lambda x: x["f1"])
-    print(f"Best Threshold (F1): {best['threshold']} with F1 = {best['f1']:.4f}")
-    return best
-
 
 def dataBatcher(batch):
     pixel_values = torch.stack([item["pixel_values"].permute(1, 0, 2, 3) for item in batch])  #(B, T, C, H, W)
@@ -285,37 +218,38 @@ def plotCalibrationCurve(probs, labels):
     plt.close(fig)
 
 if not TRAINED:
-    #training args
-    args = TrainingArguments(
-        per_device_train_batch_size=4,
-        eval_strategy="epoch",
+    arguments = TrainingArguments(
+        per_device_train_batch_size=6,
+        eval_strategy="steps",
+        eval_steps=1000,
+        save_steps=1000,
         num_train_epochs=10,
         logging_dir="./logs",
-        save_strategy="epoch",
+        save_strategy="steps",
         load_best_model_at_end=True,
-        logging_steps=500,
+        logging_steps=1000,
         fp16=torch.cuda.is_available(),
-        weight_decay=0.1,
+        weight_decay=0.2,
         max_grad_norm=1.0,
         output_dir="./timesformerOutput",
         save_total_limit=1,
         metric_for_best_model="log_loss",
         greater_is_better=False,
-        label_smoothing_factor=0.05,
+        label_smoothing_factor=0.1,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.2,
+        warmup_ratio=0.25,
         learning_rate=5e-5,
-        seed=42,
+        seed=42
     )
 
     #trainer
     trainer = Trainer(
         model=model,
-        args=args,
+        args=arguments,
         train_dataset=trainDs,
         eval_dataset=valDs,
         compute_metrics=metrics,
-        compute_loss_func=focalLoss,
+        compute_loss_func=weightedLoss,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
         data_collator=dataBatcher,
     )
@@ -398,66 +332,50 @@ plt.xlabel("P(Violence)")
 plt.ylabel("Count")
 plt.savefig("evaluation_plots/violence_probabilities_distribution.png")
 
-
-#testResults = trainer.evaluate(eval_dataset=testDs, metric_key_prefix="eval")
-  
-#print("=== TEST RESULTS ===")
-#for key, name in [
-#    ("accuracy", "Accuracy"),
-#    ("f1", "F1"),
-#    ("precision", "Precision"),
-#    ("recall", "Recall"),
-#    ("roc_auc", "ROC-AUC"),
-#    ("confusion_matrix", "Confusion Matrix"),
-#    ("classification_report", "Classification Report"),
-#]:
-#    value = testResults.get(f"eval_{key}", "N/A")
-#    print(f"{name}: {value}", flush=True)
-#print(f"Prediction time: {endTime - startTime:.2f} seconds", flush=True)
-
-#plotMetrics(testResults)
-
-#best_threshold = thresholdSweep(trainer, testDs)
-#print(f"Best threshold for F1: {best_threshold['threshold']}")
-#print(f"Best F1: {best_threshold['f1']}")
-#print(f"Best Precision: {best_threshold['precision']}")
-#print(f"Best Recall: {best_threshold['recall']}")
-#print(f"Best Accuracy: {best_threshold['accuracy']}")
-#print(f"Best Log Loss: {best_threshold['log_loss']}")
-
-
-#def createTrainerTemplate(model, args, trainDs, valDs, metrics_fn, data_collator):
-#    return Trainer(
-#        model=model,
-#        args=args,
-#        train_dataset=trainDs,
-#        eval_dataset=valDs,
-#        compute_metrics=metrics_fn,
-#        data_collator=data_collator,
-#        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
-#    )
+#distribution of non-violent
+probs = torch.nn.functional.softmax(torch.tensor(predictionResults.predictions), dim=-1).numpy()[:, 0]  #probabilities for non-violence
+plt.figure(figsize=(8, 5))
+plt.hist(1 - probs, bins=50, edgecolor='black')
+plt.title("Distribution of Non-Violence Probabilities")
+plt.xlabel("P(Non-Violence)")
+plt.ylabel("Count")
+plt.savefig("evaluation_plots/non_violence_probabilities_distribution.png")    
     
-#trainerTemplate = createTrainerTemplate(
-#    model=model,
-#    args=args,
-#    trainDs=trainDs,
-#    valDs=valDs,
-#    metrics_fn=metrics,
-#    data_collator=dataBatcher
-#)
+def weightedLoss(weights):
+    def compute_loss(model, inputs, return_outputs=False):
+        labels = inputs["labels"]
+        outputs = model(**inputs)
+        weight_tensor = torch.tensor(weights, dtype=torch.float32).to(outputs.logits.device)
+        loss = torch.nn.functional.cross_entropy(outputs.logits, labels, weight=weight_tensor)
+        return (loss, outputs) if return_outputs else loss
+    return compute_loss
+    
+def createTrainerTemplate(model, args, trainDs, valDs, metrics_fn, data_collator):
+    return Trainer(
+        model=model,
+        args=args,
+        train_dataset=trainDs,
+        eval_dataset=valDs,
+        compute_metrics=metrics_fn,
+        #compute_loss_func=weightedLoss,
+        data_collator=data_collator,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
+    )
 
-#alpha_values = [0.05, 0.1, 0.25, 0.5, 0.75]
-#gamma_values = [1, 2, 3]
+nonviolenceWeights = np.arange(1, 3.0, 0.05)
+violenceWeights = np.arange(1, 3.0, 0.05)
+weightGrid = [(nv, v) for nv in nonviolenceWeights for v in violenceWeights]
 
-#results = sweepFocalLoss(
-#    trainer_template=trainerTemplate,  #must be created before this
-#    model=model,
-#    val_dataset=valDs,
-#    alpha_values=alpha_values,
-#    gamma_values=gamma_values
-#)
+trainerTemplate = createTrainerTemplate(
+    model=model,
+    args=arguments,
+    trainDs=trainDs,
+    valDs=valDs,
+    metrics_fn=metrics,
+    data_collator=dataBatcher
+)
 
-##sort by best F1
-#best = sorted(results, key=lambda x: x['eval_f1'], reverse=True)[0]
-#print("\nBest config:")
-#print(best)
+results = gridSearchClassWeights(trainerTemplate, val_dataset=valDs, weight_grid=weightGrid)
+
+for res in results:
+    print(f"Weights: {res['weights']}, F1: {res['eval_f1']:.4f}, Accuracy: {res['eval_accuracy']:.4f}")

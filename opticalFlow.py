@@ -13,9 +13,10 @@ trainFeaturePath = "RLVS/motion_features.json"
 trainSplitPath = "RLVS/split.json"
 testFeaturePath = "RLVS/motion_features.json"
 featurePath = "RLVS/motion_features.json"
-#testFeaturePath = "RWF-2000/motion_features.json"
-#featurePath = "RWF-2000/motion_features.json"
-#splitPath = "split.json"
+splitPath = "RLVS/split.json"
+# testFeaturePath = "RWF-2000/motion_features.json"
+# featurePath = "RWF-2000/motion_features.json"
+# splitPath = "RWF-2000/split.json"
 labelMap = {"Violence": 1, "NonViolence": 0}
 
 #load features and split info
@@ -23,7 +24,7 @@ with open(featurePath, "r") as f:
     featuresByPath = json.load(f)
 
 with open(trainSplitPath, "r") as f:
-    splitMap = json.load(f)
+    trainSplitMap = json.load(f)
 
 #prepare data
 #load RLVS training features
@@ -33,6 +34,9 @@ with open(trainFeaturePath, "r") as f:
 #load RWF-2000 test features
 with open(testFeaturePath, "r") as f:
     featuresByPathTest = json.load(f)
+    
+with open(splitPath, "r") as f:
+    testSplitMap = json.load(f)
 
 def getLabel(key: str) -> int | None:       #map video IDs to labels
     name = os.path.basename(key).lower() if "/" in key or "\\" in key else key.lower()  #handle both path separators
@@ -59,9 +63,48 @@ def extractFeatures(featuresMap, splitMap, splitType):
 #get feature names from training set
 featureNames = list(next(iter(featuresByPathTrain.values())).keys())
 
-#build training and test sets
-XTrain, yTrain = extractFeatures(featuresByPathTrain, splitMap, "train")
-XTest, yTest = extractFeatures(featuresByPathTest, splitMap, "test")
+def filterTestFeatures(featuresMap, splitMap=None, allowedIDsFile=None, expectedSplit="test"):
+    if allowedIDsFile and os.path.exists(allowedIDsFile):
+        with open(allowedIDsFile, "r") as f:
+            allowedIds = set(line.strip().lower() for line in f if line.strip())
+    else:
+        allowedIds = None
+                
+    X, y = [], []
+    total, kept = 0, 0
+
+    for key, features in featuresMap.items():
+        total += 1
+        base_name = os.path.splitext(os.path.basename(key))[0].lower()
+
+        if splitMap and expectedSplit and splitMap.get(key) != expectedSplit:
+            continue
+
+        if allowedIds and base_name not in allowedIds:
+            continue
+
+        label = getLabel(key)
+        if label is None:
+            print(f"Skipping unlabelled test key: {key}")
+            continue
+
+        X.append(list(features.values()))
+        y.append(label)
+        kept += 1
+
+    print(f"[Test Filtering] Retained {kept}/{total} samples"
+          f"{' using ID list' if allowedIds else ' without filtering'}")
+
+    return X, y
+
+# prepare train/test data
+XTrain, yTrain = extractFeatures(featuresByPathTrain, trainSplitMap, "train")
+
+if testFeaturePath == "RWF-2000/motion_features.json":
+    XTest, yTest = filterTestFeatures(featuresByPathTest, testSplitMap, "tested_video_ids.txt")
+else:
+    XTest, yTest = extractFeatures(featuresByPathTest, testSplitMap, "test")
+
 
 #sanity check
 print(testFeaturePath)
@@ -147,3 +190,13 @@ for feature in featureNames:
     plt.title(f"Feature: {feature}")
     plt.legend()
     plt.show()
+    
+#save CM
+plt.figure(figsize=(8, 6))
+cm = confusion_matrix(yTest, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['NonViolence', 'Violence'], yticklabels=['NonViolence', 'Violence'])
+plt.title("Confusion Matrix - Random Forest")
+plt.xlabel("Predicted")
+plt.ylabel("True")
+plt.tight_layout()
+plt.savefig("random_forest/random_forest_confusion_matrix.png")
