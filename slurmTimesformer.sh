@@ -6,16 +6,14 @@
 #SBATCH --nodes=1 
 #SBATCH --ntasks=1 
  
-# activate your virtual environment 
+#activate virtual environment 
 source ~/Dissertation/venv/bin/activate 
 
-# move to project directory
+#move to project directory
 cd /mnt/nfs/homes/ditchfit/Dissertation/
 
-# log basic info
+#log basic info
 echo "Running on $(hostname)"
-
-#echo "preparing data"
 
 echo "Starting timesformer"
 python timesformer.py
