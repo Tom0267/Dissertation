@@ -1,7 +1,7 @@
 import os
 import shutil
 
-# Paths (change as needed)
+# Paths
 video_id_file = "tested_video_ids.txt"
 source_folder = "RWF-2000/extractedFrames"
 destination_folder = "TestedFrames"

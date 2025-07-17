@@ -11,7 +11,8 @@ import os
 
 #config
 MODELID = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-FRAMEDIR = "RWF-2000/extractedFrames"
+#FRAMEDIR = "RWF-2000/extractedFrames"
+FRAMEDIR = "TestedFrames"
 SPLITPATH = "RWF-2000/split.json"
 RESULTSPATH = "RWF-2000/results.csv"
 MAXTOKENS = 200
