@@ -41,7 +41,7 @@ class ViolenceDataset(Dataset):
 
         if allowed_ids:
             self.samples = sorted([
-                f for f in all_samples if os.path.splitext(os.path.basename(f))[0] in allowed_ids
+                f for f in all_samples if os.path.splitext(os.path.basename(f))[0].lower() in allowed_ids
             ])
         else:
             self.samples = sorted(all_samples)
@@ -341,41 +341,41 @@ plt.xlabel("P(Non-Violence)")
 plt.ylabel("Count")
 plt.savefig("evaluation_plots/non_violence_probabilities_distribution.png")    
     
-def weightedLoss(weights):
-    def compute_loss(model, inputs, return_outputs=False):
-        labels = inputs["labels"]
-        outputs = model(**inputs)
-        weight_tensor = torch.tensor(weights, dtype=torch.float32).to(outputs.logits.device)
-        loss = torch.nn.functional.cross_entropy(outputs.logits, labels, weight=weight_tensor)
-        return (loss, outputs) if return_outputs else loss
-    return compute_loss
+# def weightedLoss(weights):
+#     def compute_loss(model, inputs, return_outputs=False):
+#         labels = inputs["labels"]
+#         outputs = model(**inputs)
+#         weight_tensor = torch.tensor(weights, dtype=torch.float32).to(outputs.logits.device)
+#         loss = torch.nn.functional.cross_entropy(outputs.logits, labels, weight=weight_tensor)
+#         return (loss, outputs) if return_outputs else loss
+#     return compute_loss
     
-def createTrainerTemplate(model, args, trainDs, valDs, metrics_fn, data_collator):
-    return Trainer(
-        model=model,
-        args=args,
-        train_dataset=trainDs,
-        eval_dataset=valDs,
-        compute_metrics=metrics_fn,
-        #compute_loss_func=weightedLoss,
-        data_collator=data_collator,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
-    )
+# def createTrainerTemplate(model, args, trainDs, valDs, metrics_fn, data_collator):
+#     return Trainer(
+#         model=model,
+#         args=args,
+#         train_dataset=trainDs,
+#         eval_dataset=valDs,
+#         compute_metrics=metrics_fn,
+#         #compute_loss_func=weightedLoss,
+#         data_collator=data_collator,
+#         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
+#     )
 
-nonviolenceWeights = np.arange(1, 3.0, 0.05)
-violenceWeights = np.arange(1, 3.0, 0.05)
-weightGrid = [(nv, v) for nv in nonviolenceWeights for v in violenceWeights]
+# nonviolenceWeights = np.arange(1, 3.0, 0.05)
+# violenceWeights = np.arange(1, 3.0, 0.05)
+# weightGrid = [(nv, v) for nv in nonviolenceWeights for v in violenceWeights]
 
-trainerTemplate = createTrainerTemplate(
-    model=model,
-    args=arguments,
-    trainDs=trainDs,
-    valDs=valDs,
-    metrics_fn=metrics,
-    data_collator=dataBatcher
-)
+# trainerTemplate = createTrainerTemplate(
+#     model=model,
+#     args=arguments,
+#     trainDs=trainDs,
+#     valDs=valDs,
+#     metrics_fn=metrics,
+#     data_collator=dataBatcher
+# )
 
-results = gridSearchClassWeights(trainerTemplate, val_dataset=valDs, weight_grid=weightGrid)
+# results = gridSearchClassWeights(trainerTemplate, val_dataset=valDs, weight_grid=weightGrid)
 
-for res in results:
-    print(f"Weights: {res['weights']}, F1: {res['eval_f1']:.4f}, Accuracy: {res['eval_accuracy']:.4f}")
+# for res in results:
+#     print(f"Weights: {res['weights']}, F1: {res['eval_f1']:.4f}, Accuracy: {res['eval_accuracy']:.4f}")

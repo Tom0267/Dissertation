@@ -3,10 +3,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 #paths
-resultsCsv = "RWF-2000/results.csv"
-changesTxt = "RWF-2000/decision_changes.txt"
-mistakesTxt = "RWF-2000/secondary_mistakes.txt"
-plotPath = "RWF-2000/confusion_matrix.png"
+resultsCsv = "RWF-2000/DeepseekResults.csv"
+plotPath = "RWF-2000/Deepseek_confusion_matrix.png"
 
 #load data
 df = pd.read_csv(resultsCsv)
@@ -23,32 +21,6 @@ def inferTrueLabel(videoId):
 df["TrueLabel"] = df["VideoID"].apply(inferTrueLabel)
 df["PrimaryPred"] = df["PrimaryDecision"].str.lower().map({"yes": "violent", "no": "non-violent"})  #map primary decisions to labels
 df["FinalPred"] = df["FinalDecision"].str.lower().map({"yes": "violent", "no": "non-violent"})      #map final decisions to labels
-
-#find changes
-df["SecondaryPred"] = df["SecondaryDecision"].str.lower().map({"yes": "violent", "no": "non-violent"})  
-changed = df[df["PrimaryPred"] != df["SecondaryPred"]]      
-changed.to_csv(changesTxt, index=False, header=False)       #save changed decisions to csv
-print(f"Written {len(changed)} changed decisions to: {changesTxt}")
-
-#evaluate impact of changes
-correctChange = 0
-incorrectChange = 0
-wrongChangeVideos = []
-
-for _, row in changed.iterrows():
-    true = row["TrueLabel"]
-    primary = row["PrimaryPred"]
-    second = row["SecondaryPred"]
-
-    if second == true and primary != true:      #corrected a wrong label
-        correctChange += 1
-    elif second != true and primary == true:        #introduced a new error
-        incorrectChange += 1
-        wrongChangeVideos.append(row)
-
-#save incorrect secondaries
-pd.DataFrame(wrongChangeVideos).to_csv(mistakesTxt, index=False, header=False)
-print(f"Saved {len(wrongChangeVideos)} incorrect secondary decisions to {mistakesTxt}")
 
 #full evaluation
 df["PredLabel"] = df["PrimaryPred"]
@@ -77,25 +49,6 @@ print(f"Precision: {precision:.4f}")
 print(f"Recall   : {recall:.4f}")
 print(f"F1 Score : {f1:.4f}")
 print("\nConfusion Matrix:\n", cm)
-
-df["SecondaryLabel"] = df["SecondaryPred"]
-valid_secondary_mask = df["TrueLabel"].isin(["violent", "non-violent"]) & df["SecondaryLabel"].isin(["violent", "non-violent"])
-secondYTrue = df[valid_secondary_mask]["TrueLabel"]
-secondYPred = df[valid_secondary_mask]["SecondaryLabel"]
-
-secondAcc = accuracy_score(secondYTrue, secondYPred)
-secondPrecision = precision_score(secondYTrue, secondYPred, pos_label="violent")
-secondRecall = recall_score(secondYTrue, secondYPred, pos_label="violent")
-secondF1 = f1_score(secondYTrue, secondYPred, pos_label="violent")
-
-print("\n=== Decision Change Impact ===")
-print(f"Total changed decisions   : {len(changed)}")
-print(f" - Corrected wrong labels : {correctChange}")
-print(f" - Introduced new errors  : {incorrectChange}\n")
-print(f"Secondary decision accuracy: {secondAcc:.4f}")
-print(f"Secondary decision precision: {secondPrecision:.4f}")
-print(f"Secondary decision recall: {secondRecall:.4f}")
-print(f"Secondary decision F1 score: {secondF1:.4f}")
 
 #plot
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["violent", "non-violent"])

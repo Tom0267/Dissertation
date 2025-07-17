@@ -11,12 +11,12 @@ import os
 #config
 trainFeaturePath = "RLVS/motion_features.json"
 trainSplitPath = "RLVS/split.json"
-testFeaturePath = "RLVS/motion_features.json"
-featurePath = "RLVS/motion_features.json"
-splitPath = "RLVS/split.json"
-# testFeaturePath = "RWF-2000/motion_features.json"
-# featurePath = "RWF-2000/motion_features.json"
-# splitPath = "RWF-2000/split.json"
+# testFeaturePath = "RLVS/motion_features.json"
+# featurePath = "RLVS/motion_features.json"
+# splitPath = "RLVS/split.json"
+testFeaturePath = "RWF-2000/motion_features.json"
+featurePath = "RWF-2000/motion_features.json"
+splitPath = "RWF-2000/split.json"
 labelMap = {"Violence": 1, "NonViolence": 0}
 
 #load features and split info

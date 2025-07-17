@@ -1,5 +1,6 @@
-from transformers import MllamaForConditionalGeneration, AutoProcessor, GenerationConfig
+from transformers import AutoModelForCausalLM, GenerationConfig
 from torch.utils.data import Dataset, DataLoader
+from janus.models import VLChatProcessor
 from PIL import Image
 import textClassifier
 from tqdm import tqdm
@@ -7,13 +8,14 @@ import torch
 import json
 import time
 import csv
+import gc
 import os
 
 #config
-MODELID = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-FRAMEDIR = "RWF-2000/extractedFrames"
-SPLITPATH = "RWF-2000/split.json"
-RESULTSPATH = "RWF-2000/results.csv"
+MODELID = "deepseek-ai/Janus-Pro-7B"
+FRAMEDIR = "RLVS/extractedFrames"
+SPLITPATH = "RLVS/split.json"
+RESULTSPATH = "RLVS/DeepseekResults.csv"
 MAXTOKENS = 200
 prompt = (
     "This image is part of a public dataset of street and public scenes used for academic research. "
@@ -24,14 +26,18 @@ prompt = (
 )
 
 #load model and processor
-model = MllamaForConditionalGeneration.from_pretrained(MODELID, torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32, device_map="auto")
-model.tie_weights()                                                         
+model = AutoModelForCausalLM.from_pretrained(MODELID, torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32, device_map="auto", trust_remote_code=True).eval() 
 model.eval()
-processor = AutoProcessor.from_pretrained(MODELID)                          #load processor for model
-model.generation_config = GenerationConfig.from_pretrained(MODELID)         #load generation config from model
-model.generation_config.max_new_tokens = MAXTOKENS                          #set max tokens for generation
-model.generation_config.pad_token_id = processor.tokenizer.pad_token_id     #set pad token for model
-model.generation_config.eos_token_id = processor.tokenizer.eos_token_id     #set generation config for model
+processor = VLChatProcessor.from_pretrained(MODELID, trust_remote_code=True, use_fast=True)   #load processor for model
+generation_config = GenerationConfig(
+    max_new_tokens=MAXTOKENS,
+    do_sample=False,
+    repetition_penalty=1.0,
+    pad_token_id=processor.tokenizer.pad_token_id,
+    eos_token_id=processor.tokenizer.eos_token_id,
+    max_length=None
+)
+model.generation_config = generation_config
 
 class frameDataset(Dataset):
     def __init__(self, frame_paths):    #initialize with a list of frame paths
@@ -71,7 +77,7 @@ def cleanModelResponse(rawText, promptText):
     response = rawText.lower().strip()  #remove whitespace and make lowercase
 
     #remove roles and common separators
-    for role in ["user", "assistant", "system", "llama"]:
+    for role in ["user", "assistant", "system", "Deepseek"]:
         response = response.replace(role + "\n", "")
         response = response.replace(role + ":", "")
         response = response.replace(role, "")
@@ -85,7 +91,7 @@ def cleanModelResponse(rawText, promptText):
 def analyseVideoFrames(videoId, framePaths, frameWriter):
     captions = []
     dataset = frameDataset(framePaths)  #create dataset from frame paths
-    frameLoader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate, num_workers=2, pin_memory=True, persistent_workers=True) #create DataLoader for batching frames
+    frameLoader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate) #create DataLoader for batching frames
 
     #time the image test
     imageStart = time.time()
@@ -114,28 +120,32 @@ def analyseVideoFrames(videoId, framePaths, frameWriter):
 
 def imageTest(dataloader):
     results = []
-    for batch in dataloader:    #iterate over batches of frames
-        images = batch["image"]
-        paths = batch["path"]
+    for batch in dataloader:
+        for img, path in zip(batch["image"], batch["path"]):
+            convo = [
+                {"role": "<|User|>", "content": f"<image_placeholder>\n{prompt}"},
+                {"role": "<|Assistant|>", "content": ""}
+            ]
 
-        messages = [
-            [{"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt}]}]
-            for image in images
-        ]
-        inputPrompts = processor.apply_chat_template(messages, add_generation_prompt=True)      #apply chat template to format input prompts
-        
-        nested_images = [[image] for image in images]       #convert images to nested list format for processor 
+            proc = processor(
+                conversations=convo,
+                images=[img],
+                return_tensors="pt"
+            ).to(model.device)
 
-        inputs = processor(images=nested_images, text=inputPrompts, padding=True, return_tensors="pt").to(model.device) #process inputs for the model
+            with torch.no_grad():
+                embeds = model.prepare_inputs_embeds(**proc)
+                ids = model.language_model.generate(
+                        inputs_embeds=embeds,
+                        attention_mask=proc.attention_mask,
+                        **model.generation_config.to_dict())
 
-        with torch.no_grad():
-            output_ids = model.generate(**inputs)   #generate output IDs from model
-
-        for i in range(len(paths)):     
-            decoded = processor.decode(output_ids[i], skip_special_tokens=True).lower() #decode the output IDs to text
-            clean = cleanModelResponse(decoded, prompt) #clean response text
-            results.append((paths[i], clean))   #add path and cleaned response to results
-
+            text = processor.tokenizer.decode(ids[0], skip_special_tokens=True).lower()
+            results.append((path, cleanModelResponse(text, prompt)))
+            
+            del proc, embeds, ids
+            torch.cuda.empty_cache()
+            gc.collect()
     return results
 
 def checkBoilerplate(text):

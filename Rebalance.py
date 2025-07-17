@@ -1,12 +1,16 @@
 import pandas as pd
 
-results_csv = "RWF-2000/results.csv"
+results_csv = "RWF-2000/DeepseekResults.csv"
 output_file = "tested_video_ids.txt"
 
 df = pd.read_csv(results_csv)
 
+df["VideoID"] = df["VideoID"].astype(str).str.strip().str.lower()
+
 def inferLabel(video_id):
-    video_id = video_id.lower()
+    if video_id == "nan":
+        print(video_id)
+    #video_id = video_id.lower()
     if video_id.startswith("violence"):
         return "violent"
     elif video_id.startswith("nonviolence"):
@@ -15,6 +19,16 @@ def inferLabel(video_id):
 
 #apply the label inference
 df["TrueLabel"] = df["VideoID"].apply(inferLabel)
+
+#check for duplicate video IDs and print both IDs and their labels
+duplicates = df[df.duplicated(subset=["VideoID"], keep=False)]
+if not duplicates.empty:
+    print("Duplicate Video IDs found:")
+    for index, row in duplicates.iterrows():
+        print(f"VideoID: {row['VideoID']}, TrueLabel: {row['TrueLabel']}")
+        
+#remove duplicates by keeping the first occurrence
+df = df.drop_duplicates(subset=["VideoID"], keep='first')
 
 #keep only recognised labels
 df = df[df["TrueLabel"] != "unknown"]
